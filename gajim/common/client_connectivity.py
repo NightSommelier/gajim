@@ -7,11 +7,14 @@ from typing import Any
 
 
 def check_client_connectivity(
-    client: Any, reconnect: Callable[[], None]
+    client: Any,
+    reconnect: Callable[[], None],
+    is_reachable: Callable[[], bool],
 ) -> None:
     check_if_connected = getattr(client, "check_if_connected", None)
     if check_if_connected is not None:
         check_if_connected()
         return
 
-    reconnect()
+    if not is_reachable():
+        reconnect()

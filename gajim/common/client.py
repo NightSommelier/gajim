@@ -245,7 +245,42 @@ class Client(Observable, ClientModules):
             check_client_connectivity(
                 self._client,
                 lambda: self.disconnect(gracefully=False, reconnect=True),
+                self.remote_is_reachable,
             )
+
+    def remote_is_reachable(self) -> bool:
+        if self._client is None:
+            return True
+
+        address = self._client.remote_address
+        if address is None:
+            # Address is None when websocket is used
+            self._log.info(
+                "Unable to determine if host is reachable, remote address unknown"
+            )
+            return True
+
+        monitor = Gio.NetworkMonitor.get_default()
+        try:
+            address, port = address.rsplit(":", maxsplit=1)
+            return monitor.can_reach(
+                Gio.InetSocketAddress.new_from_string(address, int(port))
+            )
+        except GLib.Error as error:
+            quark = GLib.quark_try_string("g-io-error-quark")
+            if error.matches(quark, Gio.IOErrorEnum.HOST_UNREACHABLE):
+                return False
+
+            log.exception(
+                "Unable to determine if %r is reachable", self._client.remote_address
+            )
+            return True
+
+        except Exception:
+            log.exception(
+                "Unable to determine if %r is reachable", self._client.remote_address
+            )
+            return True
 
     def disconnect(
         self, gracefully: bool, reconnect: bool, destroy_client: bool = False
