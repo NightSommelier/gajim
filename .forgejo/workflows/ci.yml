@@ -65,9 +65,9 @@ jobs:
           .venv/bin/python -m pip install \
             --editable . \
             build \
-            codespell \
+            codespell==2.4.2 \
             pytest \
-            ruff
+            ruff==0.15.7
 
       - name: Run unit tests
         run: xvfb-run -a .venv/bin/python -m pytest -q
