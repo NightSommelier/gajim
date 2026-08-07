@@ -14,6 +14,7 @@ on:
       release_tag:
         description: "Existing gajim-* tag to republish (leave empty for build-only)"
         required: false
+        type: string
 
 jobs:
   linux-amd64:
@@ -235,8 +236,8 @@ jobs:
 
   release:
     if: >
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/gajim-')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.release_tag, 'gajim-'))
+      (forgejo.event_name == 'push' && startsWith(forgejo.ref, 'refs/tags/gajim-')) ||
+      (forgejo.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'gajim-'))
     needs:
       - linux-amd64-build
       - macos-arm64
@@ -246,28 +247,28 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.release_tag || github.ref_name }}
+          ref: ${{ inputs.release_tag || forgejo.ref_name }}
           fetch-depth: 0
 
       - name: Resolve release tag
         id: release_ref
         env:
-          RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || forgejo.ref_name }}
         shell: bash
         run: |
-          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=${RELEASE_TAG}" >> "$FORGEJO_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$FORGEJO_OUTPUT"
 
       - name: Download Linux packages
         uses: actions/download-artifact@v3
         with:
-          name: gajim-linux-amd64-${{ github.sha }}
+          name: gajim-linux-amd64-${{ forgejo.sha }}
           path: dist/release
 
       - name: Download macOS disk image
         uses: actions/download-artifact@v3
         with:
-          name: gajim-macos-arm64-${{ github.sha }}
+          name: gajim-macos-arm64-${{ forgejo.sha }}
           path: dist/release
 
       - name: Verify release files
