@@ -146,7 +146,7 @@ jobs:
           XDG_DATA_DIRS: /opt/homebrew/share
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
         run: |
-          export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
+          export PATH="$PWD/.venv/bin:$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
           .venv/bin/python mac/makebundle.py --version "${GITHUB_SHA:-ci}"
 
       - name: Smoke test macOS application
