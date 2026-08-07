@@ -4,8 +4,9 @@ The repository workflow in `.forgejo/workflows/ci.yml` uses the following
 execution policy:
 
 - Pull requests targeting `master` run Linux unit tests, Ruff, and codespell.
-- Pushes to `master` build the Linux packages and the macOS application.
-- Tags matching `gajim-*` build both platforms and publish a Forgejo
+- Pushes to `master` build the Linux packages, macOS application, and Windows
+  installers.
+- Tags matching `gajim-*` build all three targets and publish a Forgejo
   pre-release with the generated packages.
 - `workflow_dispatch` runs the packaging jobs without publishing a release when
   `release_tag` is empty. Set `release_tag` to an existing `gajim-*` tag to
@@ -17,7 +18,7 @@ upstream Gajim release.
 
 The workflow targets the `debian-latest` amd64 runner for Linux checks and
 packages. It also targets a native `macos-arm64` runner for the Apple Silicon
-application build.
+application build and a native Windows runner labelled `windows-amd64`.
 
 The Linux pull request job runs the unit tests and static checks. The Linux
 packaging job builds the metadata and publishes the Python source archive and
@@ -34,7 +35,10 @@ builds the current checkout, and publishes the generated `.dmg` as an
 artifact. For a matching tag, the `.dmg` is also attached to the Forgejo
 pre-release. The runner must be registered with the label `macos-arm64:host`.
 
-Windows packaging is not part of this workflow yet. The repository's Windows
-build requires a native Windows MSYS2 UCRT64 environment, NSIS, and MSIX tools;
-it cannot run in the Debian container. Add a Windows self-hosted Forgejo runner
-with a dedicated `windows-amd64` label before adding a Windows packaging job.
+The `windows-amd64` packaging job requires a native Windows VM with MSYS2
+UCRT64, NSIS, and Windows SDK MSIX tools. It runs `win/build.sh`, uploads
+`Gajim.exe`, `Gajim-Portable.exe`, and `Gajim.msixbundle`, and attaches them to
+matching Forgejo pre-releases. The Windows runner must be repository-scoped,
+registered with the label `windows-amd64:host`, and kept online before a tag or
+manual release run. The Windows Forgejo Runner binary is community-built, so
+the VM remains isolated and is used only for this trusted repository.

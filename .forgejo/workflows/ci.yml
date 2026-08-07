@@ -234,6 +234,52 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  windows-amd64:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-amd64
+    env:
+      MSYSTEM: UCRT64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify Windows build host
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+            throw "Windows runner must be amd64, got $env:PROCESSOR_ARCHITECTURE"
+          }
+          if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
+            throw 'MSYS2 bash was not found at C:\msys64\usr\bin\bash.exe'
+          }
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          if (-not (Get-ChildItem $sdkRoot -Recurse -Filter makeappx.exe -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            throw 'Windows SDK makeappx.exe was not found'
+          }
+          if (-not (Get-ChildItem $sdkRoot -Recurse -Filter makepri.exe -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            throw 'Windows SDK makepri.exe was not found'
+          }
+
+      - name: Build Windows installers
+        shell: C:/msys64/usr/bin/bash.exe --login -eo pipefail {0}
+        run: |
+          export PATH="/ucrt64/bin:/usr/bin:$PATH"
+          test "$MSYSTEM" = UCRT64
+          test "$(uname -m)" = x86_64
+          ./win/build.sh
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v3
+        with:
+          name: gajim-windows-amd64-${{ github.sha }}
+          path: |
+            win/_build_root/Gajim.exe
+            win/_build_root/Gajim-Portable.exe
+            win/_build_root/Gajim.msixbundle
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     if: >
       (forgejo.event_name == 'push' && startsWith(forgejo.ref, 'refs/tags/gajim-')) ||
@@ -241,6 +287,7 @@ jobs:
     needs:
       - linux-amd64-build
       - macos-arm64
+      - windows-amd64
     runs-on: debian-latest
 
     steps:
@@ -271,6 +318,12 @@ jobs:
           name: gajim-macos-arm64-${{ forgejo.sha }}
           path: dist/release
 
+      - name: Download Windows installers
+        uses: actions/download-artifact@v3
+        with:
+          name: gajim-windows-amd64-${{ forgejo.sha }}
+          path: dist/release
+
       - name: Verify release files
         shell: bash
         run: |
@@ -285,7 +338,8 @@ jobs:
           This pre-release is built from the patched fork at tag ${RELEASE_TAG}.
 
           It contains the macOS GTK4/GStreamer packaging fixes, inline formatting fixes,
-          legacy nbxmpp connectivity compatibility, and Forgejo CI packaging changes.
+          legacy nbxmpp connectivity compatibility, Forgejo CI packaging changes,
+          and the Windows MSYS2/UCRT64 installers.
           EOF
 
       - name: Update Forgejo pre-release
