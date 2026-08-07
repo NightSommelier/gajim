@@ -87,7 +87,7 @@ jobs:
           .venv/bin/python -m build
 
       - name: Upload Linux packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: gajim-linux-amd64-${{ github.sha }}
           path: |
@@ -157,7 +157,7 @@ jobs:
           test -z "$(find dist/Gajim.app/Contents/Frameworks -type f \( -name 'libgtk-3*' -o -name 'libgdk-3*' \) -print -quit)"
 
       - name: Upload macOS disk image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: gajim-macos-arm64-${{ github.sha }}
           path: gajim-*.dmg
