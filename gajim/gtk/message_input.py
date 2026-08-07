@@ -29,6 +29,7 @@ from gajim.common.ged import EventHelper
 from gajim.common.i18n import _
 from gajim.common.i18n import get_default_lang
 from gajim.common.storage.archive import models as mod
+from gajim.common.styling import move_formatting_marker_before_whitespace
 from gajim.common.styling import PlainBlock
 from gajim.common.styling import process
 from gajim.common.types import ChatContactT
@@ -92,6 +93,8 @@ class MessageInputTextView(GtkSource.View, EventHelper):
         self.add_css_class("message-input-textview")
 
         self._contact: ChatContactT | None = None
+        self._previous_text = ""
+        self._adjusting_formatting = False
 
         self._text_buffer_manager = TextBufferManager(self)
         self._text_buffer_manager.connect("buffer-changed", self._on_buffer_changed)
@@ -331,7 +334,43 @@ class MessageInputTextView(GtkSource.View, EventHelper):
             buf.remove_tag(tag, start, end)
 
     def _on_text_changed(self) -> None:
+        if self._adjusting_formatting:
+            return
+
         text = self.get_text()
+        buf = self.get_buffer()
+        cursor = buf.get_iter_at_mark(buf.get_insert()).get_offset()
+
+        normalized_text = move_formatting_marker_before_whitespace(
+            self._previous_text,
+            text,
+            cursor,
+        )
+        if normalized_text is not None:
+            self._adjusting_formatting = True
+            try:
+                insertion_start = next(
+                    index
+                    for index, (current, normalized) in enumerate(
+                        zip(text, normalized_text, strict=False)
+                    )
+                    if current != normalized
+                )
+                marker_length = 3 if text.startswith("```", cursor) else 1
+                buf.delete(
+                    buf.get_iter_at_offset(cursor),
+                    buf.get_iter_at_offset(cursor + marker_length),
+                )
+                buf.insert(
+                    buf.get_iter_at_offset(insertion_start),
+                    text[cursor : cursor + marker_length],
+                )
+                buf.place_cursor(buf.get_iter_at_offset(cursor))
+            finally:
+                self._adjusting_formatting = False
+            text = normalized_text
+
+        self._previous_text = text
         if not text:
             return
 
@@ -341,7 +380,6 @@ class MessageInputTextView(GtkSource.View, EventHelper):
             # Limit message styling processing
             return
 
-        buf = self.get_buffer()
         result = process(text)
         for block in result.blocks:
             if isinstance(block, PlainBlock):

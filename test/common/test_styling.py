@@ -8,6 +8,7 @@ from gajim.common import app  # Avoids circular imports from common.helpers
 from gajim.common import styling
 from gajim.common.styling import EmphasisSpan
 from gajim.common.styling import Hyperlink
+from gajim.common.styling import move_formatting_marker_before_whitespace
 from gajim.common.styling import PlainBlock
 from gajim.common.styling import PreBlock
 from gajim.common.styling import PreTextSpan
@@ -647,6 +648,30 @@ class Test(unittest.TestCase):
                 for span in display_block.spans
             ],
             [("strong", "bold", 0, 4), ("emphasis", "italic", 5, 11)],
+        )
+
+    def test_move_formatting_marker_before_whitespace(self):
+        for marker, content in (
+            ("*", "bold"),
+            ("_", "italic"),
+            ("~", "strike"),
+            ("`", "code"),
+        ):
+            with self.subTest(marker=marker):
+                previous_text = f"{marker}{content}{marker}"
+                current_text = f"{marker}{content} {marker}"
+                cursor = len(current_text) - 1
+
+                self.assertEqual(
+                    move_formatting_marker_before_whitespace(
+                        previous_text, current_text, cursor
+                    ),
+                    f"{marker}{content}{marker} ",
+                )
+
+        self.assertEqual(
+            move_formatting_marker_before_whitespace("*bold*", "*bold next*", 10),
+            "*bold* next",
         )
 
     def test_uris(self):

@@ -213,6 +213,71 @@ def remove_formatting_markers(block: PlainBlock) -> PlainBlock:
     return replace(block, text=display_text, spans=spans, uris=uris)
 
 
+def move_formatting_marker_before_whitespace(
+    previous_text: str,
+    current_text: str,
+    cursor: int,
+) -> str | None:
+    """Move a closing marker before whitespace inserted inside a span."""
+    if cursor < 0 or len(current_text) <= len(previous_text):
+        return None
+
+    insertion_start = 0
+    while (
+        insertion_start < len(previous_text)
+        and current_text[insertion_start] == previous_text[insertion_start]
+    ):
+        insertion_start += 1
+
+    suffix_length = 0
+    while (
+        suffix_length < len(previous_text) - insertion_start
+        and current_text[-suffix_length - 1] == previous_text[-suffix_length - 1]
+    ):
+        suffix_length += 1
+
+    inserted_text = current_text[insertion_start : len(current_text) - suffix_length]
+    if not inserted_text or inserted_text[0] not in WHITESPACE:
+        return None
+
+    if cursor != insertion_start + len(inserted_text):
+        return None
+
+    try:
+        marker = current_text[cursor]
+    except IndexError:
+        return None
+
+    if marker not in SPAN_DIRS:
+        return None
+
+    marker_length = 3 if marker == PRE and current_text.startswith("```", cursor) else 1
+    closing_marker = marker * marker_length
+    if not current_text.startswith(closing_marker, cursor):
+        return None
+
+    candidate = (
+        current_text[:insertion_start]
+        + closing_marker
+        + inserted_text
+        + current_text[cursor + marker_length :]
+    )
+    closing_end = insertion_start + marker_length
+
+    for block in process(candidate).blocks:
+        if not isinstance(block, PlainBlock):
+            continue
+        if any(
+            span.start < insertion_start
+            and span.end == closing_end
+            and candidate[span.start : span.start + marker_length] == closing_marker
+            for span in block.spans
+        ):
+            return candidate
+
+    return None
+
+
 def find_byte_index(text: str, index: int):
     byte_index = -1
     for index_, c in enumerate(text):
