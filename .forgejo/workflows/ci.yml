@@ -270,6 +270,8 @@ jobs:
           export PATH="/ucrt64/bin:/usr/bin:$PATH"
           test "$MSYSTEM" = UCRT64
           test "$(uname -m)" = x86_64
+          cd "$(cygpath -u "$GITHUB_WORKSPACE")"
+          test -f win/build.sh
           ./win/build.sh
 
       - name: Upload Windows installers
