@@ -94,3 +94,71 @@ jobs:
             dist/*.whl
             dist/metadata/*
           if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify runner architecture
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew update
+          brew install \
+            adwaita-icon-theme \
+            gettext \
+            gstreamer \
+            gst-python \
+            gtk4 \
+            gtksourceview5 \
+            libadwaita \
+            libspelling \
+            librsvg \
+            libsoup@3 \
+            pygobject3 \
+            python@3.14
+
+      - name: Create Python environment
+        env:
+          HOMEBREW_PREFIX: /opt/homebrew
+          GI_TYPELIB_PATH: /opt/homebrew/lib/girepository-1.0:/opt/homebrew/opt/gtksourceview5/lib/girepository-1.0:/opt/homebrew/opt/libspelling/lib/girepository-1.0:/opt/homebrew/share/gir-1.0
+          XDG_DATA_DIRS: /opt/homebrew/share
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
+        run: |
+          export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
+          "$HOMEBREW_PREFIX/opt/python@3.14/bin/python3.14" -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install \
+            --editable . \
+            pyobjc-framework-Cocoa \
+            pyinstaller
+
+      - name: Build macOS application and disk image
+        env:
+          HOMEBREW_PREFIX: /opt/homebrew
+          GI_TYPELIB_PATH: /opt/homebrew/lib/girepository-1.0:/opt/homebrew/opt/gtksourceview5/lib/girepository-1.0:/opt/homebrew/opt/libspelling/lib/girepository-1.0:/opt/homebrew/share/gir-1.0
+          XDG_DATA_DIRS: /opt/homebrew/share
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
+        run: |
+          export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
+          .venv/bin/python mac/makebundle.py --version "${GITHUB_SHA:-ci}"
+
+      - name: Smoke test macOS application
+        run: |
+          test -x dist/Gajim.app/Contents/MacOS/launch
+          dist/Gajim.app/Contents/MacOS/launch --help
+          test -z "$(find dist/Gajim.app/Contents/Frameworks -type f \( -name 'libgtk-3*' -o -name 'libgdk-3*' \) -print -quit)"
+
+      - name: Upload macOS disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: gajim-macos-arm64-${{ github.sha }}
+          path: gajim-*.dmg
+          if-no-files-found: error
+          retention-days: 7
