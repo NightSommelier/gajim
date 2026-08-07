@@ -237,9 +237,6 @@ jobs:
   windows-amd64:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: windows-amd64
-    env:
-      MSYSTEM: UCRT64
-      GAJIM_BUILD_ROOT: /c/_build_root
 
     steps:
       - name: Check out repository
