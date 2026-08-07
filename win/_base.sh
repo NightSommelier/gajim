@@ -78,7 +78,7 @@ winrt-Windows.UI.ViewManagement~=3.0
 "
 
 function set_build_root {
-    BUILD_ROOT="${DIR}/_build_root"
+    BUILD_ROOT="${GAJIM_BUILD_ROOT:-${DIR}/_build_root}"
     REPO_CLONE="${BUILD_ROOT}/${MSYSTEM_PREFIX:1}"/gajim
     MINGW_ROOT="${BUILD_ROOT}/${MSYSTEM_PREFIX:1}"
     PACKAGE_DIR="${BUILD_ROOT}/${MSYSTEM_PREFIX:1}/lib/python${PYTHON_VERSION}/site-packages"

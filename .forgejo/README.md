@@ -41,4 +41,7 @@ UCRT64, NSIS, and Windows SDK MSIX tools. It runs `win/build.sh`, uploads
 matching Forgejo pre-releases. The Windows runner must be repository-scoped,
 registered with the label `windows-amd64:host`, and kept online before a tag or
 manual release run. The Windows Forgejo Runner binary is community-built, so
-the VM remains isolated and is used only for this trusted repository.
+the VM remains isolated and is used only for this trusted repository. The build
+root is configurable through `GAJIM_BUILD_ROOT`; the workflow uses `/c/_build_root`
+(`C:\_build_root`) and copies the resulting installers back into the checkout
+for artifact upload.

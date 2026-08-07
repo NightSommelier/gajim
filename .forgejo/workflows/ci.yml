@@ -239,6 +239,7 @@ jobs:
     runs-on: windows-amd64
     env:
       MSYSTEM: UCRT64
+      GAJIM_BUILD_ROOT: /c/_build_root
 
     steps:
       - name: Check out repository
@@ -272,7 +273,14 @@ jobs:
           test "$(uname -m)" = x86_64
           cd "$(cygpath -u "$GITHUB_WORKSPACE")"
           test -f win/build.sh
+          test -n "$GAJIM_BUILD_ROOT"
+          mkdir -p "$GAJIM_BUILD_ROOT"
+          echo "Using persistent BUILD_ROOT=$GAJIM_BUILD_ROOT"
           ./win/build.sh
+          mkdir -p win/_build_root
+          cp "$GAJIM_BUILD_ROOT"/Gajim.exe win/_build_root/
+          cp "$GAJIM_BUILD_ROOT"/Gajim-Portable.exe win/_build_root/
+          cp "$GAJIM_BUILD_ROOT"/Gajim.msixbundle win/_build_root/
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v3
