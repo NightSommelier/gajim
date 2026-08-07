@@ -373,7 +373,13 @@ function build_msix_installer {
             echo "\"assets/gajim44x44.targetsize-${size}_altform-unplated.png\" \"assets/gajim44x44.targetsize-${size}_altform-unplated.png\"" >> filemapping.txt
             echo "\"assets/gajim44x44.targetsize-${size}_altform-lightunplated.png\" \"assets/gajim44x44.targetsize-${size}_altform-lightunplated.png\"" >> filemapping.txt
         done
-        sed "s/QL_VERSION/${QL_VERSION}.0/" ${MISC}/appxmanifest.xml > AppxManifest.xml
+        # MSIX Identity/Version requires exactly four numeric components.
+        IFS=. read -r -a MSIX_VERSION_PARTS <<< "${QL_VERSION%%+*}"
+        while [ "${#MSIX_VERSION_PARTS[@]}" -lt 4 ]; do
+            MSIX_VERSION_PARTS+=(0)
+        done
+        MSIX_VERSION="${MSIX_VERSION_PARTS[0]}.${MSIX_VERSION_PARTS[1]}.${MSIX_VERSION_PARTS[2]}.${MSIX_VERSION_PARTS[3]}"
+        sed "s/QL_VERSION/${MSIX_VERSION}/" ${MISC}/appxmanifest.xml > AppxManifest.xml
         makepri new -pr . -cf ${MISC}/priconfig.xml -mn AppxManifest.xml -of resources.pri -o
         echo "\"resources.pri\" \"resources.pri\"" >> filemapping.txt
         echo "\"AppxManifest.xml\" \"AppxManifest.xml\"" >> filemapping.txt
