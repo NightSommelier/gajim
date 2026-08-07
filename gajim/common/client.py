@@ -23,6 +23,7 @@ from nbxmpp.protocol import JID
 from gajim.common import app
 from gajim.common import modules
 from gajim.common import passwords
+from gajim.common.client_connectivity import check_client_connectivity
 from gajim.common.client_modules import ClientModules
 from gajim.common.const import ClientState
 from gajim.common.const import SimpleClientState
@@ -241,7 +242,10 @@ class Client(Observable, ClientModules):
             return
 
         if self._state.is_connected or self._state.is_available:
-            self._client.check_if_connected()
+            check_client_connectivity(
+                self._client,
+                lambda: self.disconnect(gracefully=False, reconnect=True),
+            )
 
     def disconnect(
         self, gracefully: bool, reconnect: bool, destroy_client: bool = False
