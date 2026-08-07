@@ -78,7 +78,12 @@ a = Analysis(
     hookspath=[os.path.join(os.getcwd(), "mac", "hooks")],
     hooksconfig={
         "gi": {
-            "module-versions": {"Gtk": "4.0", "GtkSource": "5"},
+            # PyInstaller defaults Gdk to GTK3 when no version is specified.
+            "module-versions": {
+                "Gdk": "4.0",
+                "Gtk": "4.0",
+                "GtkSource": "5",
+            },
         },
         "gstreamer": {
             "include_plugins": gst_include_plugins,
