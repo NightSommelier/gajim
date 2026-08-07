@@ -245,21 +245,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify Windows build host
-        shell: powershell
+        shell: cmd
         run: |
-          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
-            throw "Windows runner must be amd64, got $env:PROCESSOR_ARCHITECTURE"
-          }
-          if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
-            throw 'MSYS2 bash was not found at C:\msys64\usr\bin\bash.exe'
-          }
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          if (-not (Get-ChildItem $sdkRoot -Recurse -Filter makeappx.exe -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-            throw 'Windows SDK makeappx.exe was not found'
-          }
-          if (-not (Get-ChildItem $sdkRoot -Recurse -Filter makepri.exe -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-            throw 'Windows SDK makepri.exe was not found'
-          }
+          if /I not "%PROCESSOR_ARCHITECTURE%"=="AMD64" (
+            echo Windows runner must be amd64, got %PROCESSOR_ARCHITECTURE%
+            exit /b 1
+          )
+          if not exist "C:\msys64\usr\bin\bash.exe" (
+            echo MSYS2 bash was not found at C:\msys64\usr\bin\bash.exe
+            exit /b 1
+          )
+          where /R "%ProgramFiles(x86)%\Windows Kits\10\bin" makeappx.exe >NUL 2>&1 || (
+            echo Windows SDK makeappx.exe was not found
+            exit /b 1
+          )
+          where /R "%ProgramFiles(x86)%\Windows Kits\10\bin" makepri.exe >NUL 2>&1 || (
+            echo Windows SDK makepri.exe was not found
+            exit /b 1
+          )
 
       - name: Build Windows installers
         shell: C:/msys64/usr/bin/bash.exe --login -eo pipefail {0}
