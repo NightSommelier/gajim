@@ -10,6 +10,7 @@ import re
 import string
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from re import Match
 
 from gi.repository import GLib
@@ -164,6 +165,52 @@ SPAN_CLS_DICT = {
 class ParsingResult:
     text: str
     blocks: list[Block]
+
+
+def remove_formatting_markers(block: PlainBlock) -> PlainBlock:
+    """Return a display block without the markdown span delimiters."""
+    hidden = {marker for span in block.spans for marker in (span.start, span.end - 1)}
+    display_text = "".join(
+        char for index, char in enumerate(block.text) if index not in hidden
+    )
+
+    def map_index(index: int) -> int:
+        return sum(1 for position in range(index) if position not in hidden)
+
+    def byte_index(index: int) -> int:
+        return len(display_text[:index].encode())
+
+    spans: list[Span] = []
+    for span in block.spans:
+        start = map_index(span.start + 1)
+        end = map_index(span.end - 1)
+        spans.append(
+            replace(
+                span,
+                start=start,
+                start_byte=byte_index(start),
+                end=end,
+                end_byte=byte_index(end),
+                text=display_text[start:end],
+            )
+        )
+
+    uris: list[BaseHyperlink] = []
+    for uri in block.uris:
+        start = map_index(uri.start)
+        end = map_index(uri.end)
+        uris.append(
+            replace(
+                uri,
+                start=start,
+                start_byte=byte_index(start),
+                end=end,
+                end_byte=byte_index(end),
+                text=display_text[start:end],
+            )
+        )
+
+    return replace(block, text=display_text, spans=spans, uris=uris)
 
 
 def find_byte_index(text: str, index: int):
@@ -326,7 +373,6 @@ def _parse_uris(line: str, offset: int, offset_bytes: int) -> list[BaseHyperlink
 def _handle_pre_span(
     line: str, index: int, offset: int, offset_bytes: int, spans: list[Span]
 ) -> int:
-
     # Scan ahead for the end
     end = line.find(PRE, index + 1)
     if end == -1:
@@ -343,7 +389,6 @@ def _handle_pre_span(
 def _make_span(
     line: str, sd: str, start: int, end: int, offset: int, offset_bytes: int
 ) -> Span:
-
     text = line[start : end + 1]
 
     start_byte = find_byte_index(line, start) + offset_bytes
@@ -362,7 +407,6 @@ def _make_span(
 def _make_hyperlink(
     line: str, start: int, end: int, offset: int, offset_bytes: int, is_jid: bool
 ) -> BaseHyperlink | None:
-
     text = line[start : end + 1]
 
     start_byte = find_byte_index(line, start) + offset_bytes

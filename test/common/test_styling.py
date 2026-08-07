@@ -13,6 +13,7 @@ from gajim.common.styling import PreBlock
 from gajim.common.styling import PreTextSpan
 from gajim.common.styling import process_uris
 from gajim.common.styling import QuoteBlock
+from gajim.common.styling import remove_formatting_markers
 from gajim.common.styling import StrikeSpan
 from gajim.common.styling import StrongSpan
 from gajim.common.util.text import escape_iri_query
@@ -632,6 +633,21 @@ class Test(unittest.TestCase):
             assert isinstance(params["input"], str)
             result = styling.process(params["input"])
             self.assertEqual(result.blocks, params["tokens"])
+
+    def test_remove_formatting_markers(self):
+        result = styling.process("*bold* _italic_")
+        block = result.blocks[0]
+        assert isinstance(block, PlainBlock)
+        display_block = remove_formatting_markers(block)
+
+        self.assertEqual(display_block.text, "bold italic")
+        self.assertEqual(
+            [
+                (span.name, span.text, span.start, span.end)
+                for span in display_block.spans
+            ],
+            [("strong", "bold", 0, 4), ("emphasis", "italic", 5, 11)],
+        )
 
     def test_uris(self):
         for uri in URIS:

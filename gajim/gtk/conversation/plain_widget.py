@@ -16,6 +16,7 @@ from gi.repository import Pango
 from gajim.common.styling import BaseHyperlink
 from gajim.common.styling import PlainBlock
 from gajim.common.styling import process_uris
+from gajim.common.styling import remove_formatting_markers
 from gajim.common.util.text import process_non_spacing_marks
 from gajim.common.util.uri import parse_uri
 
@@ -126,6 +127,7 @@ class MessageLabel(Gtk.Label, SignalManager):
         return markup_text
 
     def print_text_with_styling(self, block: PlainBlock) -> None:
+        block = remove_formatting_markers(block)
         text = self._build_link_markup(block.text, block.uris)
         self.set_markup(process_non_spacing_marks(text))
         if len(self.get_text()) > MAX_MESSAGE_LENGTH:

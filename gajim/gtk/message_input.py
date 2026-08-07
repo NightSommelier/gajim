@@ -349,6 +349,16 @@ class MessageInputTextView(GtkSource.View, EventHelper):
                     start_iter = buf.get_iter_at_offset(span.start + block.start)
                     end_iter = buf.get_iter_at_offset(span.end + block.start)
                     buf.apply_tag_by_name(span.name, start_iter, end_iter)
+                    buf.apply_tag_by_name(
+                        "formatting",
+                        start_iter,
+                        buf.get_iter_at_offset(span.start + block.start + 1),
+                    )
+                    buf.apply_tag_by_name(
+                        "formatting",
+                        buf.get_iter_at_offset(span.end + block.start - 1),
+                        end_iter,
+                    )
 
     def insert_text(self, text: str) -> None:
         self.get_buffer().insert_at_cursor(text)
@@ -541,6 +551,7 @@ class TextBufferManager(GObject.Object):
             buf.create_tag("emphasis", style=Pango.Style.ITALIC)
             buf.create_tag("strike", strikethrough=True)
             buf.create_tag("pre", family="monospace")
+            buf.create_tag("formatting", invisible=True)
 
             style_scheme = self._get_style_scheme(buf)
             if style_scheme is not None:
