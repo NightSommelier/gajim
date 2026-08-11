@@ -61,9 +61,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.release_tag || github.ref }}
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Install Flatpak host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flatpak flatpak-builder
       - name: Build Flatpak bundle
-        run: nix-shell .github/nix/shell.nix --run 'bash .forgejo/scripts/build-flatpak.sh'
+        run: bash .forgejo/scripts/build-flatpak.sh
       - uses: actions/upload-artifact@v4
         with:
           name: gajim-flatpak-amd64
