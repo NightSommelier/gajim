@@ -1,0 +1,203 @@
+name: Build and release packages
+
+on:
+  push:
+    branches: [master]
+    tags: ['gajim-*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing gajim-* tag to build and publish
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: linux-uv-${{ hashFiles('pyproject.toml') }}
+          restore-keys: linux-uv-
+      - name: Test and build Linux packages
+        run: |
+          # shellcheck disable=SC2016
+          nix-shell .github/nix/shell.nix --run '
+            uv sync
+            Xvfb :99 -screen 0 1280x1024x24 >/tmp/gajim-xvfb.log 2>&1 &
+            xvfb_pid=$!
+            trap "kill $xvfb_pid" EXIT
+            DISPLAY=:99 uv run python -m pytest -q
+            uv run ruff check
+            uv run ruff format --check
+            uv run codespell
+            uv run python make.py build --dist=unix
+            appstreamcli validate dist/metadata/org.gajim.Gajim.metainfo.xml
+            uv build
+            ./linux/build-portable.sh
+          '
+          mkdir -p ci-artifacts
+          cp dist/*.tar.gz dist/*.whl dist/metadata/* ci-artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gajim-linux-amd64
+          path: ci-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  flatpak-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Build Flatpak bundle
+        run: nix-shell .github/nix/shell.nix --run 'bash .forgejo/scripts/build-flatpak.sh'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gajim-flatpak-amd64
+          path: ci-artifacts/gajim-flatpak.flatpak
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-amd64:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+      - uses: actions/cache@v4
+        with:
+          path: C:\msys64\var\cache\pacman\pkg
+          key: windows-ucrt64-${{ hashFiles('win/_base.sh', 'win/build.sh') }}
+          restore-keys: windows-ucrt64-
+      - name: Verify Windows packaging tools
+        run: |
+          test -n "$(find '/c/Program Files (x86)/Windows Kits/10/bin' -path '*/x64/makeappx.exe' -print -quit)"
+          test -n "$(find '/c/Program Files (x86)/Windows Kits/10/bin' -path '*/x64/makepri.exe' -print -quit)"
+      - name: Build Windows installers and Store bundle
+        run: |
+          export GAJIM_BUILD_ROOT="$RUNNER_TEMP/gajim-windows-build"
+          ./win/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gajim-windows-amd64
+          path: |
+            ${{ runner.temp }}/gajim-windows-build/Gajim.exe
+            ${{ runner.temp }}/gajim-windows-build/Gajim-Portable.exe
+            ${{ runner.temp }}/gajim-windows-build/Gajim.msixbundle
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - name: Install Homebrew dependencies
+        run: |
+          brew update
+          brew install adwaita-icon-theme gettext gstreamer gst-python gtk4 \
+            gtksourceview5 libadwaita libspelling librsvg libsoup@3 pygobject3 \
+            python@3.14
+      - name: Build macOS disk image
+        env:
+          HOMEBREW_PREFIX: /opt/homebrew
+          GI_TYPELIB_PATH: /opt/homebrew/lib/girepository-1.0:/opt/homebrew/opt/gtksourceview5/lib/girepository-1.0:/opt/homebrew/opt/libspelling/lib/girepository-1.0:/opt/homebrew/share/gir-1.0
+          XDG_DATA_DIRS: /opt/homebrew/share
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
+          BUNDLE_VERSION: ${{ github.sha }}
+        run: |
+          export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
+          python3.14 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install --editable . pyobjc-framework-Cocoa pyinstaller
+          export PATH="$PWD/.venv/bin:$PATH"
+          python mac/makebundle.py --version "$BUNDLE_VERSION"
+          test -x dist/Gajim.app/Contents/MacOS/launch
+          dist/Gajim.app/Contents/MacOS/launch --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gajim-macos-arm64
+          path: gajim-*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/gajim-') || inputs.release_tag != ''
+    needs: [linux-amd64, flatpak-amd64, windows-amd64, macos-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+      - name: Assemble flat release assets
+        run: |
+          mkdir release-assets
+          find downloaded -type f -exec cp {} release-assets/ \;
+          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+          test -z "$(find release-assets -maxdepth 1 -type f -size 0 -print -quit)"
+          (cd release-assets && sha256sum ./* > SHA256SUMS.txt)
+      - name: Write release notes
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          previous_tag="$(git tag --sort=-creatordate --list 'gajim-*' | grep -vxF "$RELEASE_TAG" | head -n 1 || true)"
+          {
+            echo "## What changed"
+            echo
+            if [ -n "$previous_tag" ]; then
+              git log --format='- %s' "$previous_tag..$RELEASE_TAG" | head -n 60
+            else
+              git log --format='- %s' -n 60 "$RELEASE_TAG"
+            fi
+            echo
+            echo "## Included packages"
+            echo
+            echo "- Linux amd64: wheel, source archive, portable tarball and AppImage"
+            echo "- Flatpak amd64 bundle"
+            echo "- Windows amd64: installer, portable executable and MSIX bundle"
+            echo "- macOS arm64 disk image"
+            echo
+            echo "Checksums are in \`SHA256SUMS.txt\`. Windows MSIX publication/signing for the Microsoft Store remains a separate store-submission step."
+          } > release-notes.md
+      - name: Create or update GitHub pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          # shellcheck disable=SC2016
+          nix-shell -p gh --run '
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              gh release edit "$RELEASE_TAG" --prerelease --title "Gajim $RELEASE_TAG" --notes-file release-notes.md
+            else
+              gh release create "$RELEASE_TAG" --prerelease --title "Gajim $RELEASE_TAG" --notes-file release-notes.md
+            fi
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          '

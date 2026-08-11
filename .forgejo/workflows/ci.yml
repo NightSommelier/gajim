@@ -19,7 +19,7 @@ on:
 jobs:
   linux-amd64:
     if: github.event_name == 'pull_request'
-    runs-on: debian-latest
+    runs-on: linux-amd64
 
     steps:
       - name: Check out repository
@@ -27,143 +27,98 @@ jobs:
 
       - name: Verify runner architecture
         run: |
-          test "$(dpkg --print-architecture)" = amd64
+          test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
 
-      - name: Install system dependencies
-        run: |
-          if command -v sudo >/dev/null 2>&1; then
-            SUDO=sudo
-          else
-            SUDO=
-          fi
-
-          $SUDO apt-get update
-          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            appstream-util \
-            build-essential \
-            gettext \
-            gir1.2-adw-1 \
-            gir1.2-gst-plugins-base-1.0 \
-            gir1.2-gstreamer-1.0 \
-            gir1.2-gtk-4.0 \
-            gir1.2-gtksource-5 \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav \
-            libadwaita-1-dev \
-            libcairo2-dev \
-            libgirepository1.0-dev \
-            libgirepository-2.0-dev \
-            libglib2.0-dev \
-            libgtk-4-dev \
-            libgtksourceview-5-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            libsoup-3.0-dev \
-            pkg-config \
-            python3 \
-            python3-dev \
-            python3-venv \
-            xauth \
-            xvfb
-
-      - name: Create Python environment
-        run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install \
-            --editable . \
-            build \
-            codespell==2.4.2 \
-            pytest \
-            ruff==0.15.7
+      - name: Install Python dependencies
+        run: nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run 'uv sync --locked'
 
       - name: Run unit tests
-        run: xvfb-run -a .venv/bin/python -m pytest -q
+        run: |
+          # shellcheck disable=SC2016
+          nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run '
+            Xvfb :99 -screen 0 1280x1024x24 >/tmp/gajim-xvfb.log 2>&1 &
+            XVFB_PID=$!
+            trap '\''kill "$XVFB_PID"'\'' EXIT
+            DISPLAY=:99 uv run python -m pytest -q
+          '
 
       - name: Run Ruff checks
         run: |
-          .venv/bin/ruff check
-          .venv/bin/ruff format --check
+          nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run '
+            uv run ruff check
+            uv run ruff format --check
+          '
 
       - name: Check spelling
-        run: .venv/bin/codespell
+        run: nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run 'uv run codespell'
 
   linux-amd64-build:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: debian-latest
+    runs-on: linux-amd64
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Verify runner architecture
         run: |
-          test "$(dpkg --print-architecture)" = amd64
+          test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
 
-      - name: Install system dependencies
-        run: |
-          if command -v sudo >/dev/null 2>&1; then
-            SUDO=sudo
-          else
-            SUDO=
-          fi
-
-          $SUDO apt-get update
-          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            appstream-util \
-            build-essential \
-            gettext \
-            gir1.2-adw-1 \
-            gir1.2-gst-plugins-base-1.0 \
-            gir1.2-gstreamer-1.0 \
-            gir1.2-gtk-4.0 \
-            gir1.2-gtksource-5 \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav \
-            libadwaita-1-dev \
-            libcairo2-dev \
-            libgirepository1.0-dev \
-            libgirepository-2.0-dev \
-            libglib2.0-dev \
-            libgtk-4-dev \
-            libgtksourceview-5-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            libsoup-3.0-dev \
-            pkg-config \
-            python3 \
-            python3-dev \
-            python3-venv
-
-      - name: Create Python environment
-        run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install --editable . build
+      - name: Install Python dependencies
+        run: nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run 'uv sync --locked'
 
       - name: Build metadata and Python packages
         run: |
-          .venv/bin/python ./make.py build
-          appstream-util validate dist/metadata/org.gajim.Gajim.metainfo.xml
-          .venv/bin/python -m build
+          nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run '
+            uv run python ./make.py build --dist=unix
+            appstreamcli validate dist/metadata/org.gajim.Gajim.metainfo.xml
+            uv build
+            ./linux/build-portable.sh
+          '
+
+      - name: Stage Linux packages
+        run: |
+          mkdir -p ci-artifacts
+          cp dist/*.tar.gz dist/*.whl dist/metadata/* ci-artifacts/
 
       - name: Upload Linux packages
         uses: actions/upload-artifact@v3
         with:
           name: gajim-linux-amd64-${{ github.sha }}
-          path: |
-            dist/*.tar.gz
-            dist/*.whl
-            dist/metadata/*
+          path: ci-artifacts/*
           if-no-files-found: error
+          retention-days: 7
+
+  flatpak-amd64:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: flatpak-amd64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Verify runner architecture
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          command -v nix-shell
+
+      - name: Build Flatpak bundle
+        run: nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --run 'bash .forgejo/scripts/build-flatpak.sh'
+
+      - name: Upload Flatpak bundle
+        uses: actions/upload-artifact@v3
+        with:
+          name: gajim-flatpak-amd64-${{ github.sha }}
+          path: ci-artifacts/gajim-flatpak.flatpak
+          if-no-files-found: error
+          retention-days: 7
 
   macos-arm64:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -172,6 +127,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Verify runner architecture
         run: |
@@ -216,9 +173,10 @@ jobs:
           GI_TYPELIB_PATH: /opt/homebrew/lib/girepository-1.0:/opt/homebrew/opt/gtksourceview5/lib/girepository-1.0:/opt/homebrew/opt/libspelling/lib/girepository-1.0:/opt/homebrew/share/gir-1.0
           XDG_DATA_DIRS: /opt/homebrew/share
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
+          FORGEJO_SHA: ${{ github.sha }}
         run: |
           export PATH="$PWD/.venv/bin:$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
-          .venv/bin/python mac/makebundle.py --version "${GITHUB_SHA:-ci}"
+          .venv/bin/python mac/makebundle.py --version "${FORGEJO_SHA:-ci}"
 
       - name: Smoke test macOS application
         run: |
@@ -234,83 +192,62 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  windows-amd64:
+  windows-amd64-cross:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: windows-amd64
+    runs-on: windows-cross-amd64
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
-      - name: Verify Windows build host
-        shell: cmd
+      - name: Verify Linux cross-build host
         run: |
-          if /I not "%PROCESSOR_ARCHITECTURE%"=="AMD64" (
-            echo Windows runner must be amd64, got %PROCESSOR_ARCHITECTURE%
-            exit /b 1
-          )
-          if not exist "C:\msys64\usr\bin\bash.exe" (
-            echo MSYS2 bash was not found at C:\msys64\usr\bin\bash.exe
-            exit /b 1
-          )
-          where /R "%ProgramFiles(x86)%\Windows Kits\10\bin" makeappx.exe >NUL 2>&1 || (
-            echo Windows SDK makeappx.exe was not found
-            exit /b 1
-          )
-          where /R "%ProgramFiles(x86)%\Windows Kits\10\bin" makepri.exe >NUL 2>&1 || (
-            echo Windows SDK makepri.exe was not found
-            exit /b 1
-          )
-
-      - name: Build Windows installers
-        shell: C:/msys64/usr/bin/bash.exe --login -eo pipefail {0}
-        run: |
-          export PATH="/ucrt64/bin:/usr/bin:$PATH"
-          test "$MSYSTEM" = UCRT64
+          test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
-          cd "$(cygpath -u "$GITHUB_WORKSPACE")"
-          test -f win/build.sh
-          test -n "$GAJIM_BUILD_ROOT"
-          mkdir -p "$GAJIM_BUILD_ROOT"
-          echo "Using persistent BUILD_ROOT=$GAJIM_BUILD_ROOT"
-          ./win/build.sh
-          mkdir -p win/_build_root
-          cp "$GAJIM_BUILD_ROOT"/Gajim.exe win/_build_root/
-          cp "$GAJIM_BUILD_ROOT"/Gajim-Portable.exe win/_build_root/
-          cp "$GAJIM_BUILD_ROOT"/Gajim.msixbundle win/_build_root/
+          command -v nix-shell
+          test -n "$GAJIM_MINGW_ROOT"
+          test -n "$GAJIM_MINGW_DEV_ROOT"
+          test -f "$GAJIM_MINGW_ROOT/bin/python3.14.exe"
+
+      - name: Build Windows installers without Wine
+        run: |
+          nix-shell "${GAJIM_NIX_SHELL:-/home/sommelier/projects/gajim/nix/shell.nix}" --arg withWindowsCross true --run '
+            test -x win/build-cross-direct.sh
+            ./win/build-cross-direct.sh
+          '
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v3
         with:
           name: gajim-windows-amd64-${{ github.sha }}
-          path: |
-            win/_build_root/Gajim.exe
-            win/_build_root/Gajim-Portable.exe
-            win/_build_root/Gajim.msixbundle
+          path: ci-artifacts/*
           if-no-files-found: error
           retention-days: 7
 
   release:
     if: >
-      (forgejo.event_name == 'push' && startsWith(forgejo.ref, 'refs/tags/gajim-')) ||
-      (forgejo.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'gajim-'))
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/gajim-')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'gajim-'))
     needs:
       - linux-amd64-build
+      - flatpak-amd64
       - macos-arm64
-      - windows-amd64
-    runs-on: debian-latest
+      - windows-amd64-cross
+    runs-on: linux-amd64
 
     steps:
       - name: Check out release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || forgejo.ref_name }}
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
 
       - name: Resolve release tag
         id: release_ref
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || forgejo.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           echo "tag=${RELEASE_TAG}" >> "$FORGEJO_OUTPUT"
@@ -319,38 +256,54 @@ jobs:
       - name: Download Linux packages
         uses: actions/download-artifact@v3
         with:
-          name: gajim-linux-amd64-${{ forgejo.sha }}
-          path: dist/release
+          name: gajim-linux-amd64-${{ github.sha }}
+          path: dist/release/linux
+
+      - name: Download Flatpak bundle
+        uses: actions/download-artifact@v3
+        with:
+          name: gajim-flatpak-amd64-${{ github.sha }}
+          path: dist/release/flatpak
 
       - name: Download macOS disk image
         uses: actions/download-artifact@v3
         with:
-          name: gajim-macos-arm64-${{ forgejo.sha }}
-          path: dist/release
+          name: gajim-macos-arm64-${{ github.sha }}
+          path: dist/release/macos
 
       - name: Download Windows installers
         uses: actions/download-artifact@v3
         with:
-          name: gajim-windows-amd64-${{ forgejo.sha }}
-          path: dist/release
+          name: gajim-windows-amd64-${{ github.sha }}
+          path: dist/release/windows
 
       - name: Verify release files
         shell: bash
         run: |
+          find dist/release -mindepth 1 -type f -exec cp {} dist/release/ \;
+          find dist/release -mindepth 1 -type d -prune -exec rm -rf {} +
           test -n "$(find dist/release -maxdepth 1 -type f -print -quit)"
           test -z "$(find dist/release -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -z "$(find dist/release -maxdepth 1 -type f -size 0 -print -quit)"
+          ls -lh dist/release
 
       - name: Create release notes
         env:
           RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
         run: |
-          cat > release-notes.md <<EOF
-          This pre-release is built from the patched fork at tag ${RELEASE_TAG}.
-
-          It contains the macOS GTK4/GStreamer packaging fixes, inline formatting fixes,
-          legacy nbxmpp connectivity compatibility, Forgejo CI packaging changes,
-          and the Windows MSYS2/UCRT64 installers.
-          EOF
+          PREVIOUS_TAG=$(git tag --sort=-creatordate --list 'gajim-*' | grep -vxF "$RELEASE_TAG" | head -n 1 || true)
+          {
+            echo "This pre-release is built from the patched fork at tag ${RELEASE_TAG}."
+            echo
+            echo "Included fixes and changes:"
+            if [ -n "$PREVIOUS_TAG" ]; then
+              git log --format='- %s' "$PREVIOUS_TAG..$RELEASE_TAG" | head -n 40
+            else
+              git log --format='- %s' -n 40 "$RELEASE_TAG"
+            fi
+            echo
+            echo "Builds: Linux amd64, Flatpak amd64, macOS arm64, and Windows amd64."
+          } > release-notes.md
 
       - name: Update Forgejo pre-release
         uses: actions/forgejo-release@v2

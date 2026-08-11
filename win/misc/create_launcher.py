@@ -26,7 +26,7 @@ def build_resource(rc_path: str, out_path: str) -> None:
 
     subprocess.check_call(
         [
-            "windres",
+            os.environ.get("WINDRES", "windres"),
             "-O",
             "coff",
             "-F",
@@ -39,6 +39,11 @@ def build_resource(rc_path: str, out_path: str) -> None:
 
 
 def get_build_args() -> list[str]:
+    cross_cflags = os.environ.get("GAJIM_CROSS_CFLAGS")
+    cross_libs = os.environ.get("GAJIM_CROSS_LIBS")
+    if cross_cflags is not None and cross_libs is not None:
+        return shlex.split(cross_cflags) + shlex.split(cross_libs)
+
     python_name = os.path.splitext(os.path.basename(sys.executable))[0]
     python_config = os.path.join(
         os.path.dirname(sys.executable), python_name + "-config"
@@ -57,7 +62,7 @@ def get_build_args() -> list[str]:
 def build_exe(
     source_path: str, resource_path: str, out_path: str, *, is_gui: bool
 ) -> None:
-    args = ["gcc", "-s"]
+    args = [os.environ.get("CC", "gcc"), "-s"]
     if is_gui:
         args.append("-mwindows")
     args.extend(["-o", out_path, source_path, resource_path])

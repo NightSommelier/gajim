@@ -122,6 +122,40 @@ options:
 - `uv run pytest`
 - `uv run pytest ./test/gtk/gui_file.py` (for testing GUI files)
 
+## CI packages and releases
+
+This fork builds release artifacts in
+[GitHub Actions](.github/workflows/build-release.yml). Pull requests and
+pushes build Linux amd64, Flatpak amd64, Windows amd64, and macOS arm64
+artifacts; a `gajim-*` tag creates or updates a GitHub pre-release after every
+package job succeeds.
+
+The release contains:
+
+- Linux wheel/source archive, portable `tar.zst`, and AppImage
+- Flatpak bundle
+- Windows installer, portable executable, and MSIX bundle
+- macOS arm64 DMG
+
+Windows packages are built in native MSYS2 UCRT64 on a GitHub Windows runner.
+The MSIX bundle is an installable package; Microsoft Store signing and
+submission remain a separate publisher-controlled process.
+
+For the same Linux/Flatpak build environment locally:
+
+```bash
+nix-shell .github/nix/shell.nix
+uv sync
+./linux/build-portable.sh
+bash .forgejo/scripts/build-flatpak.sh
+```
+
+To inspect or administer GitHub releases from NixOS, use the GitHub CLI without
+installing it globally: `nix-shell -p gh --run 'gh release list'`.
+
+Contribution and private-vulnerability guidance are in
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
 ## Packages and install instructions
 
 ### Packages

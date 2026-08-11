@@ -25,6 +25,32 @@ Previously the project maintained multiple versions of Gajim in
 different stable branches, but from Gajim 1.4.0 on this approach was changed
 to lower the maintenance burden and release faster.
 
+# Pull Requests
+
+Open pull requests against `master` from a focused branch. Describe the user
+visible change, the affected platforms, and the verification you ran. Keep
+unrelated formatting and generated build output out of the pull request.
+
+Do not put passwords, access tokens, private keys, signing certificates, or
+private vulnerability details in a commit, issue, pull request, or CI log.
+Report security issues through the process in [SECURITY.md](SECURITY.md).
+
+On NixOS or another Nix host, the GitHub-compatible development environment is
+available with:
+
+```bash
+nix-shell .github/nix/shell.nix
+uv sync
+uv run python -m pytest -q
+uv run ruff check
+uv run ruff format --check
+uv run codespell
+```
+
+The pull-request workflow validates Linux and produces the release packages on
+pushes, tags, and manual release runs. Test Windows changes in MSYS2 UCRT64 and
+macOS changes on macOS when they affect those platform-specific builders.
+
 
 # Commit Messages
 
