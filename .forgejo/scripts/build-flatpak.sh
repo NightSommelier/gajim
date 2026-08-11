@@ -21,7 +21,10 @@ pattern = re.compile(
 text, count = pattern.subn("      - type: dir\n        path: .", text, count=1)
 if count != 1:
     raise SystemExit("could not locate the Gajim source in the Flatpak manifest")
-path.write_text(text.replace("path: app-overrides.json", "path: flatpak/app-overrides.json"))
+path.write_text(
+    text.replace("path: app-overrides.json", "path: flatpak/app-overrides.json")
+    .replace("path: farstream-make-4.3.patch", "path: flatpak/farstream-make-4.3.patch")
+)
 PY
 
 flatpak --user remote-add --if-not-exists \
