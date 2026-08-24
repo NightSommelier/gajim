@@ -46,8 +46,6 @@ jobs:
             uv build
             ./linux/build-portable.sh
           '
-          mkdir -p ci-artifacts
-          cp dist/*.tar.gz dist/*.whl ci-artifacts/
       - uses: actions/upload-artifact@v4
         with:
           name: gajim-linux-amd64
@@ -106,7 +104,6 @@ jobs:
           name: gajim-windows-amd64
           path: |
             ${{ runner.temp }}/gajim-windows-build/Gajim.exe
-            ${{ runner.temp }}/gajim-windows-build/Gajim-Portable.exe
             ${{ runner.temp }}/gajim-windows-build/Gajim.msixbundle
           if-no-files-found: error
           retention-days: 14
@@ -165,31 +162,42 @@ jobs:
         run: |
           mkdir release-assets
           find downloaded -type f -exec cp {} release-assets/ \;
-          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+          test -f release-assets/Gajim.exe
+          test -f release-assets/Gajim.msixbundle
+          test -f release-assets/gajim-linux-amd64-portable.tar.zst
+          test -f release-assets/gajim-linux-amd64.AppImage
+          test -f release-assets/gajim-flatpak.flatpak
+          test "$(find release-assets -maxdepth 1 -type f -name '*.dmg' | wc -l)" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 6
           test -z "$(find release-assets -maxdepth 1 -type f -size 0 -print -quit)"
-          (cd release-assets && sha256sum ./* > SHA256SUMS.txt)
       - name: Write release notes
         env:
+          REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          previous_tag="$(git tag --sort=-creatordate --list 'gajim-*' | grep -vxF "$RELEASE_TAG" | head -n 1 || true)"
+          release_url="https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG"
+          macos_asset="$(basename "$(find release-assets -maxdepth 1 -type f -name '*.dmg')")"
           {
+            echo "## Downloads"
+            echo
+            echo "- [Windows installer (.exe)]($release_url/Gajim.exe)"
+            echo "- [Windows MSIX bundle]($release_url/Gajim.msixbundle)"
+            echo "- [Linux portable archive (.tar.zst)]($release_url/gajim-linux-amd64-portable.tar.zst)"
+            echo "- [Linux AppImage]($release_url/gajim-linux-amd64.AppImage)"
+            echo "- [Linux Flatpak bundle]($release_url/gajim-flatpak.flatpak)"
+            echo "- [macOS arm64 disk image (.dmg)]($release_url/$macos_asset)"
+            echo
             echo "## What changed"
             echo
-            if [ -n "$previous_tag" ]; then
-              git log --format='- %s' "$previous_tag..$RELEASE_TAG" | head -n 60
-            else
-              git log --format='- %s' -n 60 "$RELEASE_TAG"
-            fi
+            git log --first-parent --format='- %s' -n 12 "$RELEASE_TAG"
             echo
             echo "## Included packages"
             echo
-            echo "- Linux amd64: wheel, source archive, portable tarball and AppImage"
-            echo "- Flatpak amd64 bundle"
-            echo "- Windows amd64: installer, portable executable and MSIX bundle"
+            echo "- Linux amd64: portable archive, AppImage and Flatpak bundle"
+            echo "- Windows amd64: installer and MSIX bundle"
             echo "- macOS arm64 disk image"
             echo
-            echo "Checksums are in \`SHA256SUMS.txt\`. Windows MSIX publication/signing for the Microsoft Store remains a separate store-submission step."
+            echo "Windows MSIX publication/signing for the Microsoft Store remains a separate store-submission step."
           } > release-notes.md
       - name: Create or update GitHub pre-release
         env:
