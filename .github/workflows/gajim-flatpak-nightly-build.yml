@@ -12,6 +12,7 @@ jobs:
       FTP_PASSWORD: ${{ secrets.ftp_password }}
       FTP_SERVER: ${{ secrets.ftp_server }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86_64
@@ -26,6 +27,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('flatpak/**') }}
+          restore-keys: flatpak-builder-${{ matrix.arch }}-
       - name: Install flatpak-builder
         run: sudo apt install -y flatpak flatpak-builder
       - name: Add flathub repository
@@ -56,9 +62,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload flatpak bundle via FTPS
-        if: env.FTP_USER != '' && env.FTP_PASSWORD != '' && env.FTP_SERVER != ''
-        run: >-
-          curl --fail --retry 3 --retry-all-errors --ftp-ssl-reqd
-          --user "$FTP_USER:$FTP_PASSWORD"
-          -T "gajim-nightly-${{ matrix.arch }}.flatpak"
-          "ftp://$FTP_SERVER/./downloads/snap/linux/Gajim-${{ steps.date.outputs.date }}-${{ matrix.arch }}.flatpak"
+        run: |
+          if [ -z "$FTP_USER" ] || [ -z "$FTP_PASSWORD" ] || [ -z "$FTP_SERVER" ]; then
+            echo "FTPS credentials are not configured; skipping nightly upload"
+            exit 0
+          fi
+          curl --fail --retry 3 --retry-all-errors --ftp-ssl-reqd \
+            --user "$FTP_USER:$FTP_PASSWORD" \
+            -T "gajim-nightly-${{ matrix.arch }}.flatpak" \
+            "ftp://$FTP_SERVER/./downloads/snap/linux/Gajim-${{ steps.date.outputs.date }}-${{ matrix.arch }}.flatpak"

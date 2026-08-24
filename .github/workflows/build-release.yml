@@ -99,7 +99,7 @@ jobs:
           test -n "$(find '/c/Program Files (x86)/Windows Kits/10/bin' -path '*/x64/makepri.exe' -print -quit)"
       - name: Build Windows installers and Store bundle
         run: |
-          export GAJIM_BUILD_ROOT="$RUNNER_TEMP/gajim-windows-build"
+          export GAJIM_BUILD_ROOT="$(cygpath -u "$RUNNER_TEMP")/gajim-windows-build"
           ./win/build.sh
       - uses: actions/upload-artifact@v4
         with:

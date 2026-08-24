@@ -40,9 +40,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload dmg file via FTPS
-        if: env.FTP_USER != '' && env.FTP_PASSWORD != '' && env.FTP_SERVER != ''
-        run: >-
-          PATH=/opt/homebrew/opt/curl/bin:$PATH curl --fail --retry 3 --retry-all-errors
-          --ftp-ssl-reqd --user "$FTP_USER:$FTP_PASSWORD"
-          -T gajim-source/gajim-*.dmg
-          "ftp://$FTP_SERVER/./downloads/snap/macos/Gajim-Nightly-${{ matrix.arch }}-${{ steps.date.outputs.date }}.dmg"
+        run: |
+          if [ -z "$FTP_USER" ] || [ -z "$FTP_PASSWORD" ] || [ -z "$FTP_SERVER" ]; then
+            echo "FTPS credentials are not configured; skipping nightly upload"
+            exit 0
+          fi
+          PATH=/opt/homebrew/opt/curl/bin:$PATH curl --fail --retry 3 --retry-all-errors \
+            --ftp-ssl-reqd --user "$FTP_USER:$FTP_PASSWORD" \
+            -T gajim-source/gajim-*.dmg \
+            "ftp://$FTP_SERVER/./downloads/snap/macos/Gajim-Nightly-${{ matrix.arch }}-${{ steps.date.outputs.date }}.dmg"
