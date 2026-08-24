@@ -7,6 +7,10 @@ on:
 
 jobs:
   flatpak:
+    env:
+      FTP_USER: ${{ secrets.ftp_user }}
+      FTP_PASSWORD: ${{ secrets.ftp_password }}
+      FTP_SERVER: ${{ secrets.ftp_server }}
     strategy:
       matrix:
         include:
@@ -27,11 +31,34 @@ jobs:
       - name: Add flathub repository
         run: flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       - name: Build flatpak
-        run: flatpak-builder --user --repo=flatpak_repo --install-deps-from=flathub --force-clean flatpak_build flatpak/org.gajim.Gajim.Devel.yaml
+        run: |
+          for attempt in 1 2 3; do
+            if flatpak-builder --user --repo=flatpak_repo --install-deps-from=flathub --force-clean flatpak_build flatpak/org.gajim.Gajim.Devel.yaml; then
+              exit 0
+            fi
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            echo "Flatpak source download failed; retrying in 20 seconds ($attempt/3)" >&2
+            rm -rf flatpak_build
+            sleep 20
+          done
       - name: Create single-file bundle
         run: flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo flatpak_repo "gajim-nightly-${{ matrix.arch }}.flatpak" org.gajim.Gajim.Devel
       - name: Get current date
         id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+      - name: Upload nightly Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gajim-nightly-${{ matrix.arch }}
+          path: gajim-nightly-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload flatpak bundle via FTPS
-        run: "curl -T gajim-*.flatpak --ssl-reqd ftp://${{ secrets.ftp_user }}:${{ secrets.ftp_password }}@${{ secrets.ftp_server }}/./downloads/snap/linux/Gajim-${{ steps.date.outputs.date }}-${{ matrix.arch }}.flatpak"
+        if: env.FTP_USER != '' && env.FTP_PASSWORD != '' && env.FTP_SERVER != ''
+        run: >-
+          curl --fail --retry 3 --retry-all-errors --ftp-ssl-reqd
+          --user "$FTP_USER:$FTP_PASSWORD"
+          -T "gajim-nightly-${{ matrix.arch }}.flatpak"
+          "ftp://$FTP_SERVER/./downloads/snap/linux/Gajim-${{ steps.date.outputs.date }}-${{ matrix.arch }}.flatpak"

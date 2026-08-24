@@ -87,6 +87,7 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          install: git
       - uses: actions/cache@v4
         with:
           path: C:\msys64\var\cache\pacman\pkg
