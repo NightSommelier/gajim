@@ -47,7 +47,7 @@ jobs:
             ./linux/build-portable.sh
           '
           mkdir -p ci-artifacts
-          cp dist/*.tar.gz dist/*.whl dist/metadata/* ci-artifacts/
+          cp dist/*.tar.gz dist/*.whl ci-artifacts/
       - uses: actions/upload-artifact@v4
         with:
           name: gajim-linux-amd64
@@ -203,5 +203,10 @@ jobs:
             else
               gh release create "$RELEASE_TAG" --prerelease --title "Gajim $RELEASE_TAG" --notes-file release-notes.md
             fi
+            for asset in $(gh release view "$RELEASE_TAG" --json assets --jq ".assets[].name"); do
+              if [ ! -f "release-assets/$asset" ]; then
+                gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+              fi
+            done
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           '
