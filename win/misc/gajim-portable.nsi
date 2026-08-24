@@ -18,9 +18,9 @@ BrandingText "Gajim Setup"
 
 !define MUI_ICON "${NSISDIR}\Contrib\Graphics\Icons\nsis3-install-alt.ico"
 !define MUI_HEADERIMAGE
-!define MUI_HEADERIMAGE_BITMAP "..\misc\nsis_header.bmp"
-!define MUI_WELCOMEFINISHPAGE_BITMAP "..\misc\nsis_wizard.bmp"
-!define MUI_UNWELCOMEFINISHPAGE_BITMAP "..\misc\nsis_wizard.bmp"
+!define MUI_HEADERIMAGE_BITMAP "${__FILEDIR__}\nsis_header.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${__FILEDIR__}\nsis_wizard.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "${__FILEDIR__}\nsis_wizard.bmp"
 !define MUI_COMPONENTSPAGE_SMALLDESC
 !define MUI_ABORTWARNING
 
