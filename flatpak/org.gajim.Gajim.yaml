@@ -232,7 +232,7 @@ modules:
         url: https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz
         sha256: 3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce
 
-  # httpx dependencies
+  # httpx/httpx2 dependencies
   - name: python3-truststore
     buildsystem: simple
     build-commands:
@@ -316,6 +316,15 @@ modules:
         url: https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl
         sha256: 2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
 
+  - name: python3-httpcore2
+    buildsystem: simple
+    build-commands:
+      - pip3 install httpcore2-2.12.0-py3-none-any.whl
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/d2/74/d370e55600d9bcfa0d9794b0166126d49291a3d2b20c268fc98c453a4948/httpcore2-2.12.0-py3-none-any.whl
+        sha256: 7e04258ce01013d7d615e5b910a3b27fac937d7a95038227e79652b4ba3b4ceb
+
   # sockio dependency
   - name: python3-flit-core
     buildsystem: simple
@@ -343,6 +352,15 @@ modules:
       - type: file
         url: https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl
         sha256: d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+
+  - name: python3-httpx2
+    buildsystem: simple
+    build-commands:
+      - pip3 install httpx2-2.12.0-py3-none-any.whl
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/c8/95/411ba65569158e862368917aaf56597f3e5fa3b91b0502919638465a08f3/httpx2-2.12.0-py3-none-any.whl
+        sha256: cc8b6eecb8661c146b8f89a60e97456ee086e91a784ed31ac450c3a9e613dd36
 
   # sentry-sdk dependency
   - name: python3-urllib3
@@ -496,7 +514,7 @@ modules:
     build-commands:
       - ./make.py build --dist=flatpak
       - ./make.py install --dist=flatpak --prefix=/app
-      - pip3 install --no-build-isolation .
+      - pip3 install --no-build-isolation --no-deps .
       - cp -t ${FLATPAK_DEST} app-overrides.json
     sources:
       - type: git

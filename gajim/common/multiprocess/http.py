@@ -20,7 +20,7 @@ from functools import partial
 from io import BytesIO
 from pathlib import Path
 
-import httpx
+import httpx2
 import truststore
 
 from gajim.common.aes import AESGCMDecryptor
@@ -97,7 +97,7 @@ class NonEncryptor:
         return b""
 
 
-def get_header_values(headers: httpx.Headers) -> tuple[int | None, str | None]:
+def get_header_values(headers: httpx2.Headers) -> tuple[int | None, str | None]:
     try:
         content_length = max(int(headers["Content-Length"]), 0)
     except Exception:
@@ -151,7 +151,7 @@ def http_request(
         trust_env = False
 
     ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    client = httpx.Client(
+    client = httpx2.Client(
         timeout=timeout,
         verify=ctx,
         http2=http2,
@@ -253,8 +253,8 @@ def http_request(
 
     try:
         resp.raise_for_status()
-    except httpx.HTTPStatusError:
-        # https://github.com/encode/httpx/issues/1990
+    except httpx2.HTTPStatusError:
+        # https://github.com/pydantic/httpx2/issues/1990
         raise HTTPStatusError(f"{resp.status_code} {resp.reason_phrase}")
 
     content_length, content_type = get_header_values(resp.headers)

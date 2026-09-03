@@ -12,12 +12,13 @@ jobs:
       FTP_PASSWORD: ${{ secrets.ftp_password }}
       FTP_SERVER: ${{ secrets.ftp_server }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-14
             arch: arm64
-          - os: macos-15-intel
-            arch: x86_64
+          - os: macos-15
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     defaults:
@@ -35,7 +36,7 @@ jobs:
       - name: Upload nightly DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gajim-nightly-macos-${{ matrix.arch }}
+          name: gajim-nightly-macos-${{ matrix.os }}-${{ matrix.arch }}
           path: gajim-source/gajim-*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -48,4 +49,4 @@ jobs:
           PATH=/opt/homebrew/opt/curl/bin:$PATH curl --fail --retry 3 --retry-all-errors \
             --ftp-ssl-reqd --user "$FTP_USER:$FTP_PASSWORD" \
             -T gajim-source/gajim-*.dmg \
-            "ftp://$FTP_SERVER/./downloads/snap/macos/Gajim-Nightly-${{ matrix.arch }}-${{ steps.date.outputs.date }}.dmg"
+            "ftp://$FTP_SERVER/./downloads/snap/macos/Gajim-Nightly-${{ matrix.os }}-${{ matrix.arch }}-${{ steps.date.outputs.date }}.dmg"

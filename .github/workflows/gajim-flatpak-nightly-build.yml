@@ -33,7 +33,9 @@ jobs:
           key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('flatpak/**') }}
           restore-keys: flatpak-builder-${{ matrix.arch }}-
       - name: Install flatpak-builder
-        run: sudo apt install -y flatpak flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
       - name: Add flathub repository
         run: flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       - name: Build flatpak

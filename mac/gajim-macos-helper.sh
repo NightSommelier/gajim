@@ -46,7 +46,7 @@ python_dependencies="\
 	emoji \
 	h2 \
 	socksio \
-	httpx \
+	httpx2 \
 	pysequoia"
 
 # Set PATH and DYLD_LIBRARY_PATH for Brew to use Brew Python version (see https://dev.gajim.org/gajim/gajim/-/issues/12365)
@@ -179,17 +179,17 @@ function build_new_environment() {
 		install_gajim
 	elif [ "$CI_BUILD" == 1 ]
 	then
-		python${python_version} -m pip install $python_dependencies --break-system-packages
+		python${python_version} -m pip install --upgrade --ignore-installed $python_dependencies --break-system-packages
 		if [ "$CI_GAJIM_RELEASE" == 0 ]
 		then
 			cd ./omemo-dr-source/
-			python${python_version} -m pip install . --break-system-packages
+			python${python_version} -m pip install --ignore-installed . --break-system-packages
 			cd ../nbxmpp-source/
-			python${python_version} -m pip install . --break-system-packages
+			python${python_version} -m pip install --ignore-installed . --break-system-packages
 			cd ../
 		fi
 		cd ./gajim-source/
-		python${python_version} -m pip install . --break-system-packages
+		python${python_version} -m pip install --ignore-installed . --break-system-packages
 		cd ../
 	fi
 }
@@ -205,7 +205,7 @@ function create_dmg() {
 		deactivate
 	elif [ "$CI_BUILD" == 1 ]
 	then
-		python${python_version} -m pip install git+https://github.com/pyinstaller/pyinstaller.git --break-system-packages
+		python${python_version} -m pip install --ignore-installed git+https://github.com/pyinstaller/pyinstaller.git --break-system-packages
 		cd ./gajim-source/
 		./mac/makebundle.py
 		cd ../
