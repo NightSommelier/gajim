@@ -121,9 +121,14 @@ jobs:
       - name: Install Homebrew dependencies
         run: |
           brew update
-          brew install adwaita-icon-theme gettext gstreamer gst-python gtk4 \
+          brew unlink openssl@1.1 2>/dev/null || true
+          brew link --overwrite openssl@3 2>/dev/null || true
+          brew install --overwrite adwaita-icon-theme gettext gstreamer gst-python gtk4 \
             gtksourceview5 libadwaita libspelling librsvg libsoup@3 pygobject3 \
-            python@3.14
+            python@3.14 || {
+              brew unlink openssl@1.1 2>/dev/null || true
+              brew link --overwrite --force openssl@3 2>/dev/null || true
+            }
       - name: Build macOS disk image
         env:
           HOMEBREW_PREFIX: /opt/homebrew
@@ -133,8 +138,9 @@ jobs:
           BUNDLE_VERSION: ${{ github.sha }}
         run: |
           export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/opt/python@3.14/bin:$PATH"
-          python3.14 -m venv .venv
+          python3.14 -m venv --system-site-packages .venv
           .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python ./make.py build
           .venv/bin/python -m pip install --editable . pyobjc-framework-Cocoa pyinstaller
           export PATH="$PWD/.venv/bin:$PATH"
           python mac/makebundle.py --version "$BUNDLE_VERSION"

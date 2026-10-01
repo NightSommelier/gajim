@@ -73,14 +73,21 @@ export CI_GAJIM_RELEASE=0
 
 function install_brew_dependencies() {
 	brew update
-	brew install python@${python_version} gettext librsvg git gtk4 libadwaita pygobject3 adwaita-icon-theme libsoup@3 gst-python gtksourceview5 gstreamer libspelling
+	# GitHub Actions macos-15 images ship with a conflicting /opt/homebrew/bin/openssl link (openssl@1.1).
+	# Unlink it before installing modern dependencies to avoid link collision errors.
+	brew unlink openssl@1.1 2>/dev/null || true
+	brew link --overwrite openssl@3 2>/dev/null || true
+	brew install --overwrite python@${python_version} gettext librsvg git gtk4 libadwaita pygobject3 adwaita-icon-theme libsoup@3 gst-python gtksourceview5 gstreamer libspelling || {
+		brew unlink openssl@1.1 2>/dev/null || true
+		brew link --overwrite --force openssl@3 2>/dev/null || true
+	}
 }
 
 function recreate_venv() {
 	if [ -d "./gajim-venv" ]; then
 		rm -rf ./gajim-venv
 	fi
-	python${python_version} -m venv ./gajim-venv
+	python${python_version} -m venv --system-site-packages ./gajim-venv
 	source ./gajim-venv/bin/activate
 	pip3 install --upgrade pip
 	pip3 install --upgrade $python_dependencies pyinstaller
@@ -109,10 +116,14 @@ function clone_source() {
 	else
 		gajim_version="$CI_GAJIM_RELEASE"
 	fi
-	git clone ${gajim_git} ./gajim-source
-	cd ./gajim-source/
-	git checkout ${gajim_version}
-	cd ../
+	if [ -d "../.git" ]; then
+		git clone .. ./gajim-source
+	else
+		git clone ${gajim_git} ./gajim-source
+		cd ./gajim-source/
+		git checkout ${gajim_version}
+		cd ../
+	fi
 }
 
 function install_omemo_dr() {
@@ -134,8 +145,8 @@ function install_nbxmpp() {
 function install_gajim() {
 	source ./gajim-venv/bin/activate
 	cd ./gajim-source/
-	python ./make.py build --dist macos
-	pip3 install .
+	python3 ./make.py build --dist macos
+	pip3 install --no-deps .
 	cd ../
 	deactivate
 }
