@@ -8,9 +8,11 @@ from PyInstaller.utils.hooks import collect_submodules
 
 
 cwd = os.getcwd()
-sys.path.insert(0, cwd)
+src_dir = os.path.join(cwd, "src") if os.path.exists(os.path.join(cwd, "src")) else cwd
+sys.path.insert(0, src_dir)
 
-modules = glob.glob("gajim/common/modules/*.py")
+gajim_dir = os.path.join(cwd, "src", "gajim") if os.path.exists(os.path.join(cwd, "src", "gajim")) else os.path.join(cwd, "gajim")
+modules = glob.glob(os.path.join(gajim_dir, "common", "modules", "*.py"))
 hiddenimports = [
     "gajim.common.modules." + os.path.basename(path)[:-3]
     for path in modules
@@ -55,7 +57,7 @@ gst_include_plugins = [
 a = Analysis(
     [os.path.join(cwd, "launch.py")],
     pathex=[cwd],
-    datas=[(os.path.join(cwd, "gajim"), "gajim")],
+    datas=[(gajim_dir, "gajim")],
     hiddenimports=hiddenimports,
     hookspath=[os.path.join(cwd, "mac", "hooks")],
     hooksconfig={

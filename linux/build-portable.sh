@@ -32,8 +32,13 @@ ln -sfn ../lib/gajim/Gajim "$APP_DIR/usr/bin/gajim"
 sed 's/^Exec=.*/Exec=gajim %u/; s/^Icon=.*/Icon=org.gajim.Gajim/' \
     "$REPO_ROOT/dist/metadata/org.gajim.Gajim.desktop" \
     > "$APP_DIR/usr/share/applications/org.gajim.Gajim.desktop"
-cp "$REPO_ROOT/gajim/data/icons/hicolor/scalable/apps/gajim.svg" \
-    "$APP_DIR/usr/share/icons/hicolor/scalable/apps/org.gajim.Gajim.svg"
+if [ -f "$REPO_ROOT/src/gajim/data/icons/hicolor/scalable/apps/gajim.svg" ]; then
+    cp "$REPO_ROOT/src/gajim/data/icons/hicolor/scalable/apps/gajim.svg" \
+        "$APP_DIR/usr/share/icons/hicolor/scalable/apps/org.gajim.Gajim.svg"
+else
+    cp "$REPO_ROOT/gajim/data/icons/hicolor/scalable/apps/gajim.svg" \
+        "$APP_DIR/usr/share/icons/hicolor/scalable/apps/org.gajim.Gajim.svg"
+fi
 
 # linuxdeploy performs dependency deployment and creates AppRun. Its optional
 # AppImage output plugin is not included by the Nix package, so appimagetool

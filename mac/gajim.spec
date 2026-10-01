@@ -28,9 +28,11 @@ info_plist = {
     "NSUIElement": True,
 }
 
-sys.path.insert(0, os.path.join(cwd))
+src_dir = os.path.join(cwd, "src") if os.path.exists(os.path.join(cwd, "src")) else cwd
+sys.path.insert(0, src_dir)
 
-modules = glob.glob("gajim/common/modules/*.py")
+gajim_dir = os.path.join(cwd, "src", "gajim") if os.path.exists(os.path.join(cwd, "src", "gajim")) else os.path.join(cwd, "gajim")
+modules = glob.glob(os.path.join(gajim_dir, "common", "modules", "*.py"))
 modules_list = [
     os.path.basename(f)[:-3] for f in modules if not f.endswith("__init__.py")
 ]
@@ -77,7 +79,7 @@ gst_include_plugins = [
 a = Analysis(
     ["mac/launch.py"],
     pathex=[cwd],
-    datas=[("gajim", "gajim")],  # typos: ignore
+    datas=[(gajim_dir, "gajim")],  # typos: ignore
     hiddenimports=hiddenimports,
     hookspath=[os.path.join(os.getcwd(), "mac", "hooks")],
     hooksconfig={

@@ -347,15 +347,19 @@ function build_msix_installer {
         done
         mkdir -p assets bundle
         # https://learn.microsoft.com/en-us/windows/apps/design/style/iconography/app-icon-construction
+        local svg_icon="${DIR}/../src/gajim/data/icons/hicolor/scalable/apps/gajim.svg"
+        if [ ! -f "$svg_icon" ]; then
+            svg_icon="${DIR}/../gajim/data/icons/hicolor/scalable/apps/gajim.svg"
+        fi
         for size in {44,50,150}; do
             for scale in {100,125,150,200,400}; do
                 scaled_size=$(( (${size}*${scale}+100/2)/100 ))
-                rsvg-convert -w ${scaled_size} -h ${scaled_size} -o assets/gajim${size}x${size}.scale-${scale}.png ${DIR}/..src/gajim/data/icons/hicolor/scalable/apps/gajim.svg
+                rsvg-convert -w ${scaled_size} -h ${scaled_size} -o assets/gajim${size}x${size}.scale-${scale}.png "$svg_icon"
                 echo "\"assets/gajim${size}x${size}.scale-${scale}.png\" \"assets/gajim${size}x${size}.scale-${scale}.png\"" >> filemapping.txt
             done
         done
         for size in {16,24,32,48,256}; do
-            rsvg-convert -w ${size} -h ${size} -o assets/gajim44x44.targetsize-${size}.png ${DIR}/..src/gajim/data/icons/hicolor/scalable/apps/gajim.svg
+            rsvg-convert -w ${size} -h ${size} -o assets/gajim44x44.targetsize-${size}.png "$svg_icon"
             cp assets/gajim44x44.targetsize-${size}.png assets/gajim44x44.targetsize-${size}_altform-unplated.png
             cp assets/gajim44x44.targetsize-${size}.png assets/gajim44x44.targetsize-${size}_altform-lightunplated.png
             echo "\"assets/gajim44x44.targetsize-${size}.png\" \"assets/gajim44x44.targetsize-${size}.png\"" >> filemapping.txt

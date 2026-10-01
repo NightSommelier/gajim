@@ -37,11 +37,12 @@ PACKAGE="$BUILD_ROOT/Gajim.msix"
 rm -rf "$WORK" "$PACKAGE"
 mkdir -p "$STAGE/assets"
 
-# MSYS2 files are copied as regular files so the package does not contain
-# Linux symlinks when the sysroot came from a tar export.
 cp -aL "$MINGW_ROOT"/. "$STAGE/"
 
-ICON="$REPO_ROOT/gajim/data/icons/hicolor/scalable/apps/gajim.svg"
+ICON="$REPO_ROOT/src/gajim/data/icons/hicolor/scalable/apps/gajim.svg"
+if [ ! -f "$ICON" ]; then
+    ICON="$REPO_ROOT/gajim/data/icons/hicolor/scalable/apps/gajim.svg"
+fi
 for size in 44 50 150; do
     rsvg-convert -w "$size" -h "$size" \
         -o "$STAGE/gajim${size}x${size}.png" "$ICON"

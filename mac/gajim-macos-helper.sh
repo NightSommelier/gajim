@@ -73,27 +73,27 @@ export CI_GAJIM_RELEASE=0
 
 function install_brew_dependencies() {
 	brew update
-	if [ "$CI_BUILD" == 0 ]
-	then
-		brew install python@${python_version}
-	fi
-	brew install gettext librsvg git
-	brew unlink python && brew link python@${python_version}
-	brew install gtk4 libadwaita pygobject3 adwaita-icon-theme libsoup@3 gst-python gtksourceview5 gstreamer libspelling
-	brew unlink gettext && brew link gettext
-	brew unlink libsoup && brew link libsoup@3
+	brew install python@${python_version} gettext librsvg git gtk4 libadwaita pygobject3 adwaita-icon-theme libsoup@3 gst-python gtksourceview5 gstreamer libspelling
+	brew unlink python >/dev/null 2>&1 || true
+	brew link --overwrite --force python@${python_version} || true
+	brew unlink gettext >/dev/null 2>&1 || true
+	brew link --overwrite --force gettext || true
+	brew unlink libsoup >/dev/null 2>&1 || true
+	brew link --overwrite --force libsoup@3 || true
 	# Reinstall glib via Brew to avoid missing libgobject (see https://github.com/libvips/ruby-vips/issues/284#issuecomment-2040414765)
-	brew reinstall glib
-	brew unlink glib && brew link glib
+	brew reinstall glib || true
+	brew unlink glib >/dev/null 2>&1 || true
+	brew link --overwrite --force glib || true
 }
 
 function recreate_venv() {
 	if [ -d "./gajim-venv" ]; then
-		rm -r ./gajim-venv
+		rm -rf ./gajim-venv
 	fi
 	python${python_version} -m venv ./gajim-venv
 	source ./gajim-venv/bin/activate
-	pip3 install --upgrade $python_dependencies
+	pip3 install --upgrade pip
+	pip3 install --upgrade $python_dependencies pyinstaller
 	deactivate
 }
 
@@ -168,52 +168,25 @@ function clean_environment() {
 		rm -rf ./omemo-dr-source
 	fi
 	if [ -d "./gajim-venv" ]; then
-		rm -r ./gajim-venv
+		rm -rf ./gajim-venv
 	fi
 }
 
 function build_new_environment() {
 	install_brew_dependencies
 	clone_source
-	if [ "$CI_BUILD" == 0 ]
-	then
-		recreate_venv
-		install_omemo_dr
-		install_nbxmpp
-		install_gajim
-	elif [ "$CI_BUILD" == 1 ]
-	then
-		python${python_version} -m pip install --upgrade --ignore-installed $python_dependencies --break-system-packages
-		if [ "$CI_GAJIM_RELEASE" == 0 ]
-		then
-			cd ./omemo-dr-source/
-			python${python_version} -m pip install --ignore-installed . --break-system-packages
-			cd ../nbxmpp-source/
-			python${python_version} -m pip install --ignore-installed . --break-system-packages
-			cd ../
-		fi
-		cd ./gajim-source/
-		python${python_version} -m pip install --ignore-installed . --break-system-packages
-		cd ../
-	fi
+	recreate_venv
+	install_omemo_dr
+	install_nbxmpp
+	install_gajim
 }
 
 function create_dmg() {
-	if [ "$CI_BUILD" == 0 ]
-	then
-		source ./gajim-venv/bin/activate
-		pip3 install --upgrade git+https://github.com/pyinstaller/pyinstaller.git
-		cd ./gajim-source/
-		./mac/makebundle.py
-		cd ../
-		deactivate
-	elif [ "$CI_BUILD" == 1 ]
-	then
-		python${python_version} -m pip install --ignore-installed git+https://github.com/pyinstaller/pyinstaller.git --break-system-packages
-		cd ./gajim-source/
-		./mac/makebundle.py
-		cd ../
-	fi
+	source ./gajim-venv/bin/activate
+	cd ./gajim-source/
+	./mac/makebundle.py
+	cd ../
+	deactivate
 }
 
 function main()

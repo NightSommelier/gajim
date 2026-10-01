@@ -6,7 +6,7 @@ manifest=.gajim-ci-flatpak.yaml
 cp flatpak/org.gajim.Gajim.yaml "$manifest"
 trap 'rm -f "$manifest"' EXIT
 
-python3.12 - "$manifest" <<'PY'
+python3 - "$manifest" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -15,8 +15,8 @@ path = Path(sys.argv[1])
 text = path.read_text()
 pattern = re.compile(
     r"      - type: git\n"
-    r"        url: https://dev\.gajim\.org/gajim/gajim\.git\n"
-    r"        tag: 2\.5\.0"
+    r"        url: [^\n]+\n"
+    r"        tag: [^\n]+"
 )
 text, count = pattern.subn("      - type: dir\n        path: .", text, count=1)
 if count != 1:
@@ -24,6 +24,7 @@ if count != 1:
 path.write_text(
     text.replace("path: app-overrides.json", "path: flatpak/app-overrides.json")
     .replace("path: farstream-make-4.3.patch", "path: flatpak/farstream-make-4.3.patch")
+    .replace("- python3-modules.json", "- flatpak/python3-modules.json")
 )
 PY
 

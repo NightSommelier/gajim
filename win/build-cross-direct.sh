@@ -84,8 +84,11 @@ if [ ! -s "$SPELLER_ZIP" ]; then
 fi
 7z x -aoa -o"$MINGW_ROOT/share" "$SPELLER_ZIP" >/dev/null
 
-rm -rf "$MINGW_ROOT/share/icons/hicolor"
-cp -a gajim/data/icons/hicolor "$MINGW_ROOT/share/icons/"
+if [ -d "src/gajim/data/icons/hicolor" ]; then
+    cp -a src/gajim/data/icons/hicolor "$MINGW_ROOT/share/icons/"
+else
+    cp -a gajim/data/icons/hicolor "$MINGW_ROOT/share/icons/"
+fi
 
 # These cache files are data files, not Windows executables. Build them with
 # Linux-side GLib tools when available; an absent cache is harmless.
