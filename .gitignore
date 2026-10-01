@@ -42,3 +42,7 @@ mac/gajim-venv
 *.sublime-workspace
 .idea
 uv.lock
+ci-artifacts/
+.linux-portable/
+data/org.gajim.Gajim.desktop
+data/org.gajim.Gajim.metainfo.xml
