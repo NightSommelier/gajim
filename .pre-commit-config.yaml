@@ -1,36 +1,34 @@
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 repos:
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.15.7
+    rev: v0.16.2
     hooks:
-      - id: ruff-check
-        exclude: ".githooks/"
       - id: ruff-format
+        stages: [pre-commit]
       - id: ruff-check
         args: [--select, I, --fix]
+        stages: [pre-commit]
+      - id: ruff-check
+        exclude: ".githooks/"
+        stages: [pre-commit]
 
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.2
+  - repo: https://codeberg.org/fsfe/reuse-tool
+    rev: v6.2.0
     hooks:
-    - id: codespell
-      pass_filenames: false
-      additional_dependencies:
-        - tomli
+      - id: reuse-lint-file
+        stages: [pre-commit]
 
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.407
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.50.3
     hooks:
-    - id: pyright
-      pass_filenames: false
-      additional_dependencies:
-        - nbxmpp @ git+https://dev.gajim.org/gajim/python-nbxmpp.git
-        - PyGObject-stubs @ git+https://github.com/pygobject/pygobject-stubs.git
-        - python-gitlab
-        - ruamel.yaml
-        - sentry-sdk
-      stages: [manual]
+      - id: typos
+        args: [--force-exclude]
+        stages: [pre-commit]
 
-  - repo: https://github.com/fsfe/reuse-tool
-    rev: v5.0.2
+  - repo: https://gitlab.com/gajim/gajim-pre-commit.git
+    rev: v1.0.0
     hooks:
-      - id: reuse
-        stages: [manual]
+    - id: gajim-pc-msg
+      stages: [commit-msg]
+    - id: gajim-pc-push
+      stages: [pre-push]

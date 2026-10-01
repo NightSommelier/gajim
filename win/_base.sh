@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # Copyright 2016 Christoph Reiter
 # Copyright 2017 Philipp Hörist
 #
@@ -60,8 +61,8 @@ ${MINGW_PACKAGE_PREFIX}-webp-pixbuf-loader \
 "
 
 PYTHON_REQUIREMENTS="\
-git+https://dev.gajim.org/gajim/omemo-dr.git
-git+https://dev.gajim.org/gajim/python-nbxmpp.git
+git+https://gitlab.com/gajim/omemo-dr.git
+git+https://gitlab.com/gajim/python-nbxmpp.git
 css_parser
 httpx2[http2,socks]
 truststore
@@ -123,7 +124,7 @@ function create_root {
 }
 
 function install_mingw_deps {
-    # Downgrade pango https://dev.gajim.org/gajim/gajim/-/issues/12730
+    # Downgrade pango https://gitlab.com/gajim/gajim/-/work_items/12730
     build_pacman --noconfirm -U https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-pango-1.56.4-3-any.pkg.tar.zst
     build_pacman --noconfirm -S ${MINGW_DEPS}
 }
@@ -174,14 +175,6 @@ function install_gajim {
     # Install language dicts
     curl -o "${BUILD_ROOT}"/speller_dicts.zip https://gajim.org/downloads/snap/win/build/speller_dicts.zip
     7z x -o"${MINGW_ROOT}"/share "${BUILD_ROOT}"/speller_dicts.zip
-
-    # Install our own icons
-    rm -Rf "${MINGW_ROOT}/share/icons/hicolor"
-    cp -r gajim/data/icons/hicolor "${MINGW_ROOT}"/share/icons
-
-    # Update icon cache
-    "${MINGW_ROOT}"/bin/gtk4-update-icon-cache.exe --force \
-        "${MINGW_ROOT}/share/icons/hicolor"
 }
 
 function cleanup_install {
@@ -255,12 +248,8 @@ function cleanup_install {
     find "${MINGW_ROOT}"/lib/"${PYTHON_ID}".* -type d -name "*_test*" \
         -prune -exec rm -rf {} \;
 
-    # Remove translations we don't support
-    for d in "${MINGW_ROOT}"/share/locale/*/LC_MESSAGES; do
-        if [ ! -f "${d}"/gajim.mo ]; then
-            rm -Rf "${d}"
-        fi
-    done
+    # Remove translations
+    rm -Rf "${MINGW_ROOT}"/share/locale/*
 
     # Remove EXE files
     echo "Removing .exe files"
@@ -361,12 +350,12 @@ function build_msix_installer {
         for size in {44,50,150}; do
             for scale in {100,125,150,200,400}; do
                 scaled_size=$(( (${size}*${scale}+100/2)/100 ))
-                rsvg-convert -w ${scaled_size} -h ${scaled_size} -o assets/gajim${size}x${size}.scale-${scale}.png ${DIR}/../gajim/data/icons/hicolor/scalable/apps/gajim.svg
+                rsvg-convert -w ${scaled_size} -h ${scaled_size} -o assets/gajim${size}x${size}.scale-${scale}.png ${DIR}/..src/gajim/data/icons/hicolor/scalable/apps/gajim.svg
                 echo "\"assets/gajim${size}x${size}.scale-${scale}.png\" \"assets/gajim${size}x${size}.scale-${scale}.png\"" >> filemapping.txt
             done
         done
         for size in {16,24,32,48,256}; do
-            rsvg-convert -w ${size} -h ${size} -o assets/gajim44x44.targetsize-${size}.png ${DIR}/../gajim/data/icons/hicolor/scalable/apps/gajim.svg
+            rsvg-convert -w ${size} -h ${size} -o assets/gajim44x44.targetsize-${size}.png ${DIR}/..src/gajim/data/icons/hicolor/scalable/apps/gajim.svg
             cp assets/gajim44x44.targetsize-${size}.png assets/gajim44x44.targetsize-${size}_altform-unplated.png
             cp assets/gajim44x44.targetsize-${size}.png assets/gajim44x44.targetsize-${size}_altform-lightunplated.png
             echo "\"assets/gajim44x44.targetsize-${size}.png\" \"assets/gajim44x44.targetsize-${size}.png\"" >> filemapping.txt

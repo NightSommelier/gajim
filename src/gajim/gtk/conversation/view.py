@@ -1,0 +1,1313 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+from typing import Any
+from typing import cast
+from typing import Literal
+
+import logging
+from collections import defaultdict
+from collections.abc import Generator
+from collections.abc import Iterable
+from datetime import datetime
+
+from gi.repository import Gio
+from gi.repository import GLib
+from gi.repository import GObject
+from gi.repository import Graphene
+from gi.repository import Gtk
+from nbxmpp.errors import StanzaError
+from nbxmpp.protocol import JID
+from nbxmpp.structs import MucSubject
+
+import gajim.common.storage.archive.models as mod
+from gajim.common import app
+from gajim.common import events
+from gajim.common import ged
+from gajim.common import types
+from gajim.common.const import Direction
+from gajim.common.helpers import idle_add_once
+from gajim.common.helpers import timeout_add_once
+from gajim.common.helpers import to_user_string
+from gajim.common.modules.chat_markers import DisplayedMarkerData
+from gajim.common.modules.contacts import BareContact
+from gajim.common.modules.contacts import GroupchatContact
+from gajim.common.modules.contacts import GroupchatParticipant
+from gajim.common.modules.httpupload import HTTPFileTransfer
+from gajim.common.storage.archive.const import ChatDirection
+from gajim.common.storage.archive.const import MessageType
+from gajim.common.storage.archive.models import Message
+from gajim.common.storage.archive.storage import MessageArchiveStorage
+from gajim.common.types import ChatContactT
+from gajim.common.util.datetime import get_start_of_day
+
+from gajim.gtk.conversation.rows.base import BaseRow
+from gajim.gtk.conversation.rows.call import CallRow
+from gajim.gtk.conversation.rows.command_output import CommandOutputRow
+from gajim.gtk.conversation.rows.date import DateRow
+from gajim.gtk.conversation.rows.displayed import DisplayedRow
+from gajim.gtk.conversation.rows.encryption_info import EncryptionInfoRow
+from gajim.gtk.conversation.rows.file_transfer import FileTransferRow
+from gajim.gtk.conversation.rows.file_transfer_jingle import FileTransferJingleRow
+from gajim.gtk.conversation.rows.info import InfoMessage
+from gajim.gtk.conversation.rows.message import MessageRow
+from gajim.gtk.conversation.rows.muc_join_left import MUCJoinLeft
+from gajim.gtk.conversation.rows.muc_subject import MUCSubject
+from gajim.gtk.conversation.rows.scroll_hint import ScrollHintRow
+from gajim.gtk.conversation.rows.user_status import UserStatus
+from gajim.gtk.conversation.rows.widgets import MessageRowActions
+from gajim.gtk.util.misc import check_finalize
+from gajim.gtk.util.misc import iterate_listbox_children
+
+log = logging.getLogger("gajim.gtk.conversation_view")
+
+
+class ConversationView(Gtk.ScrolledWindow):
+    __gsignals__ = {
+        "request-history": (
+            GObject.SignalFlags.RUN_LAST | GObject.SignalFlags.ACTION,
+            None,
+            (str,),
+        ),
+    }
+
+    # Time without any scroll position change after which scrolling is
+    # considered to be finished
+    _SCROLL_END_DELAY = 100
+
+    def __init__(
+        self, message_row_actions: MessageRowActions, storage: MessageArchiveStorage
+    ) -> None:
+        Gtk.ScrolledWindow.__init__(self)
+
+        self.set_overlay_scrolling(False)
+        self.add_css_class("scrolled-no-border")
+        self.add_css_class("no-scroll-indicator")
+        self.add_css_class("scrollbar-style")
+        self.set_vexpand(True)
+
+        self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        # This is a workaround: as soon as a line break occurs in Gtk.TextView
+        # with word-char wrapping enabled, a hyphen character is automatically
+        # inserted before the line break. This triggers the hscrollbar to show,
+        # see: https://gitlab.gnome.org/GNOME/gtk/-/issues/2384
+        # Using set_hscroll_policy(Gtk.Scrollable.Policy.NEVER) would cause bad
+        # performance during resize, and prevent the window from being shrunk
+        # horizontally under certain conditions (applies to GroupchatControl)
+        self.get_hscrollbar().set_visible(False)
+
+        self._message_row_actions = message_row_actions
+        self._storage = storage
+
+        self._contact: ChatContactT | None = None
+        self._client = None
+
+        self._list_box = Gtk.ListBox()
+
+        # Keeps track of the number of rows shown in ConversationView
+        self._row_count: int = 0
+        self._max_row_count: int = 100
+
+        # Keeps track of date rows we have added to the list
+        self._active_date_rows: set[datetime] = set()
+
+        self._message_id_row_map: dict[str, MessageRow] = {}
+        self._stanza_id_row_map: dict[str, MessageRow] = {}
+
+        self._scroll_hint_row = None
+
+        self._current_upper: float = 0
+        self._block_upper_scroll = False
+        self._applying_anchor = False
+        self._autoscroll: bool = True
+        self._wait_for_map_after_scroll = False
+        self._pk_for_scroll: int | None = None
+        self._request_history_at_upper: float | None = None
+        self._upper_complete: bool = False
+        self._lower_complete: bool = True
+        self._requesting: str | None = None
+        self._block_signals = False
+        self._scroll_end_timeout_id: int | None = None
+        self._at_bottom_notify_pending = False
+
+        self._signal_handlers_enabled = False
+        self._signal_handler_ids = (0, 0)
+        # Maps occupnat id -> markers
+        self._dm_occupant_markers: dict[str | None, DisplayedMarkerData] = {}
+        # Maps message ids -> occupant id -> markers
+        self._dm_id_occupant_markers: dict[
+            str, dict[str | None, DisplayedMarkerData]
+        ] = defaultdict(dict)
+        # Maps message ids -> DisplayedRows
+        self._dm_rows: dict[str, DisplayedRow] = {}
+
+        self._last_occupant_messages: dict[str, mod.Message] = {}
+
+        self.set_child(self._list_box)
+
+        app.ged.register_event_handler(
+            "register-actions", ged.GUI1, self._on_register_actions
+        )
+
+        self._list_box.connect("map", self._on_map)
+
+    @GObject.Property(
+        type=bool,
+        default=True,
+        flags=GObject.ParamFlags.READABLE | GObject.ParamFlags.EXPLICIT_NOTIFY,
+    )
+    def at_bottom(self) -> bool:
+        return self._autoscroll
+
+    def _on_register_actions(self, _event: events.RegisterActions) -> None:
+        app.window.get_action("scroll-view-up").connect(
+            "activate", self._on_scroll_view
+        )
+        app.window.get_action("scroll-view-down").connect(
+            "activate", self._on_scroll_view
+        )
+
+    def copy_selected_messages(self) -> None:
+        format_string = app.settings.get("date_time_format")
+        selection_text = ""
+        for row in cast(list[BaseRow], self._list_box.get_selected_rows()):
+            if isinstance(row, MessageRow):
+                timestamp_formatted = row.timestamp.strftime(format_string)
+                selection_text += (
+                    f"{timestamp_formatted} - {row.name}:\n{row.get_text()}\n"
+                )
+
+        self.get_clipboard().set(selection_text)
+
+        self.disable_row_selection()
+
+    def get_selected_messages(self) -> list[MessageRow]:
+        return cast(list[MessageRow], self._list_box.get_selected_rows())
+
+    def enable_row_selection(self, pk: int | None) -> None:
+        self._list_box.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
+
+        if pk is not None:
+            row = self._get_row_by_pk(pk)
+            self._list_box.select_row(row)
+
+        for row in self.iter_rows():
+            row.enable_selection_mode()
+
+    def disable_row_selection(self) -> None:
+        self._list_box.unselect_all()
+        self._list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+
+        for row in self.iter_rows():
+            row.disable_selection_mode()
+
+    def _on_scroll_view(self, action: Gio.SimpleAction, _param: Literal[None]) -> None:
+        action_name = action.get_name()
+        if action_name == "scroll-view-down":
+            self.emit("scroll-child", Gtk.ScrollType.PAGE_DOWN, False)
+
+        elif action_name == "scroll-view-up":
+            self.emit("scroll-child", Gtk.ScrollType.PAGE_UP, False)
+
+    def _enable_signal_handlers(self, enable: bool) -> None:
+        if self._signal_handlers_enabled == enable:
+            return
+
+        vadjustment = self.get_vadjustment()
+
+        if enable:
+            upper_id = vadjustment.connect("notify::upper", self._on_adj_upper_changed)
+            value_id = vadjustment.connect("notify::value", self._on_adj_value_changed)
+            self._signal_handler_ids = (upper_id, value_id)
+        else:
+            upper_id, value_id = self._signal_handler_ids
+            vadjustment.disconnect(upper_id)
+            vadjustment.disconnect(value_id)
+
+        self._signal_handlers_enabled = enable
+
+    def clear(self) -> None:
+        app.settings.disconnect_signals(self)
+        self._enable_signal_handlers(False)
+
+        if self._scroll_end_timeout_id is not None:
+            GLib.source_remove(self._scroll_end_timeout_id)
+            self._scroll_end_timeout_id = None
+        self._at_bottom_notify_pending = False
+
+        self._reset()
+
+        self._contact = None
+        self._client = None
+
+    def reload(self) -> None:
+        if self._contact is None:
+            return
+        self.switch_contact(self._contact)
+
+    def switch_contact(self, contact: ChatContactT) -> None:
+        self._contact = contact
+        self._client = app.get_client(contact.account)
+
+        self._enable_signal_handlers(False)
+        self.block_signals(True)
+        self._reset()
+
+        self.disable_row_selection()
+
+        if isinstance(self._contact, GroupchatParticipant):
+            show_markers = self._contact.room.settings.get("send_marker")
+        else:
+            show_markers = self._contact.settings.get("send_marker")
+
+        if show_markers:
+            self._load_displayed_marker()
+
+        self._scroll_hint_row = ScrollHintRow(self._contact.account)
+        self._list_box.append(self._scroll_hint_row)
+
+        app.settings.disconnect_signals(self)
+
+        app.settings.connect_signal(
+            "print_join_left",
+            self._on_contact_setting_changed,
+            account=contact.account,
+            jid=contact.jid,
+        )
+
+        app.settings.connect_signal(
+            "print_status",
+            self._on_contact_setting_changed,
+            account=contact.account,
+            jid=contact.jid,
+        )
+
+        self.block_signals(False)
+        self._enable_signal_handlers(True)
+
+    def block_signals(self, value: bool) -> None:
+        self._block_signals = value
+
+    def _emit(self, signal_name: str, *args: Any) -> None:
+        if not self._block_signals:
+            log.debug("emit %s, %s", signal_name, args)
+            idle_add_once(self.emit, signal_name, *args)
+
+    def _notify(self, property_: str) -> None:
+        if self._block_signals:
+            return
+
+        log.debug("notify property '%s'", property_)
+        self.notify(property_)
+
+    def _reset_list_box(self) -> None:
+        self._list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        # Performance: Disable sort function before removing all rows
+        self._list_box.set_sort_func(None)
+        check_finalize(self._list_box, only_children=True)
+        self._list_box.remove_all()
+
+        self._list_box.set_sort_func(self._sort_func)
+
+    def _reset(self) -> None:
+        self._current_upper = 0
+        self._autoscroll = True
+        self._wait_for_map_after_scroll = False
+        self._pk_for_scroll = None
+
+        self._request_history_at_upper = None
+        self._upper_complete = False
+        self._lower_complete = True
+        self._requesting = None
+        self.set_history_complete(True, False)
+
+        self._reset_list_box()
+
+        self._row_count = 0
+        self._active_date_rows = set()
+        self._message_id_row_map = {}
+        self._stanza_id_row_map = {}
+        self._scroll_hint_row = None
+
+        self._dm_id_occupant_markers.clear()
+        self._dm_occupant_markers.clear()
+        self._dm_rows.clear()
+        self._last_occupant_messages.clear()
+
+    def reset(self) -> None:
+        assert self._contact is not None
+        self.switch_contact(self._contact)
+
+    def set_history_complete(self, before: bool, complete: bool) -> None:
+        if before:
+            self._upper_complete = complete
+            if self._scroll_hint_row is None:
+                return
+            self._scroll_hint_row.set_history_complete(complete)
+        else:
+            self._lower_complete = complete
+
+    def get_lower_complete(self) -> bool:
+        return self._lower_complete
+
+    def _scroll_to_pos_idle(self, adj: Gtk.Adjustment, value: float) -> None:
+        if value == -1:
+            # scroll to end
+            value = adj.get_upper() - adj.get_page_size()
+
+        idle_add_once(adj.set_value, value)
+
+    def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
+        # Rows are height-for-width, so anything which changes their height
+        # moves the content the user is reading: a resize rewraps the text, and
+        # an image preview picks a new size an idle after that. Remember where
+        # the topmost visible row sits and put it back afterwards, otherwise
+        # the scroll position stays put while the content above it grows or
+        # shrinks, and the messages slide up and down.
+        anchor = self._get_scroll_anchor()
+
+        self._block_upper_scroll = anchor is not None
+        Gtk.ScrolledWindow.do_size_allocate(self, width, height, baseline)
+        self._block_upper_scroll = False
+
+        if anchor is None or not self._restore_scroll_anchor(anchor):
+            return
+
+        # Gtk.Viewport applies the scroll position when it allocates its child,
+        # so allocate a second time to make the correction part of this frame
+        # instead of the next one.
+        Gtk.ScrolledWindow.do_size_allocate(self, width, height, baseline)
+
+    def _get_scroll_anchor(self) -> tuple[Gtk.ListBoxRow | None, float] | None:
+        """Remember which row sits at the top of the viewport, and where.
+
+        Returns None if there is nothing to keep in place, and a row of None to
+        signal that the view should stay at the bottom.
+        """
+        if self._wait_for_map_after_scroll:
+            # A scroll to a specific message is pending, don't interfere
+            return None
+
+        if self._autoscroll:
+            return None, 0
+
+        adj = self.get_vadjustment()
+        value = adj.get_value()
+
+        row = self._list_box.get_row_at_y(round(value))
+        if row is None:
+            return None
+
+        coordinates = row.translate_coordinates(self._list_box, 0, 0)
+        if coordinates is None:
+            return None
+
+        row_y = coordinates[1]
+        if row_y < value:
+            # The row is partially scrolled out of view. Prefer the row below
+            # it, so that a rewrap of this row extends it upwards, out of the
+            # viewport, instead of pushing everything the user sees downwards.
+            next_row = row.get_next_sibling()
+            if next_row is not None:
+                coordinates = next_row.translate_coordinates(self._list_box, 0, 0)
+                if (
+                    coordinates is not None
+                    and coordinates[1] - value < adj.get_page_size()
+                ):
+                    row, row_y = cast(Gtk.ListBoxRow, next_row), coordinates[1]
+
+        return row, row_y - value
+
+    def _restore_scroll_anchor(
+        self, anchor: tuple[Gtk.ListBoxRow | None, float]
+    ) -> bool:
+        adj = self.get_vadjustment()
+        max_value = max(adj.get_upper() - adj.get_page_size(), 0)
+        row, offset = anchor
+
+        if row is None:
+            value = max_value
+        else:
+            coordinates = row.translate_coordinates(self._list_box, 0, 0)
+            if coordinates is None:
+                # The row is gone
+                return False
+            value = min(max(coordinates[1] - offset, 0), max_value)
+
+        if abs(value - adj.get_value()) < 1:
+            return False
+
+        if row is None:
+            # We were already autoscrolling and are only keeping the view
+            # pinned to the bottom, so let the normal at-bottom bookkeeping
+            # (and the "mark as read" logic it triggers) run as usual.
+            adj.set_value(value)
+            return True
+
+        # Keeping a row in place while not autoscrolling is not the user
+        # scrolling, don't let it turn into autoscroll. Otherwise content
+        # which shrinks enough to push the anchor against the bottom would
+        # latch the view there, and firing "at-bottom" here would wrongly
+        # mark messages as read that the user hasn't actually seen.
+        self._applying_anchor = True
+        adj.set_value(value)
+        self._applying_anchor = False
+        return True
+
+    def _on_adj_upper_changed(
+        self, adj: Gtk.Adjustment, _pspec: GObject.ParamSpec
+    ) -> None:
+        upper = adj.get_upper()
+        diff = upper - self._current_upper
+
+        # log.debug(
+        #     f"upper changed: " \
+        #     f"upper={upper=}, " \
+        #     f"page_size={adj.get_page_size()}, " \
+        #     f"{self._current_upper=}, " \
+        #     f"{self._autoscroll=}"
+        # )
+
+        if diff != 0:
+            self._current_upper = upper
+            if self._autoscroll:
+                if not self._block_upper_scroll:
+                    self._scroll_to_pos_idle(adj, -1)
+            else:
+                # Workaround
+                # https://gitlab.gnome.org/GNOME/gtk/merge_requests/395
+                self.set_kinetic_scrolling(True)
+                if self._requesting == "before" and not self._block_upper_scroll:
+                    self._scroll_to_pos_idle(adj, adj.get_value() + diff)
+
+        if upper == adj.get_page_size():
+            # There is no scrollbar
+            self._emit("request-history", "before")
+            self._lower_complete = True
+            self._autoscroll = True
+            self._notify("at-bottom")
+
+        self._requesting = None
+
+    def _on_adj_value_changed(
+        self, adj: Gtk.Adjustment, _pspec: GObject.ParamSpec
+    ) -> None:
+        self._start_scrolling()
+
+        if self._requesting is not None:
+            return
+
+        # log.debug(
+        #     f"value changed: " \
+        #     f"upper={adj.get_upper()}"
+        #     f"value={adj.get_value()}, " \
+        #     f"page_size={adj.get_page_size()}, " \
+        #     f"{self._upper_complete=}, " \
+        #     f"{self._lower_complete=}, " \
+        #     f"{self._autoscroll=}"
+        # )
+
+        if not self._applying_anchor:
+            self._autoscroll = self._determine_autoscroll()
+            # Defer the actual notification until scrolling settles (see
+            # _stop_scrolling): do_size_allocate() re-runs this every time
+            # anything resizes while pinned to the bottom (window resizes,
+            # avatar/preview loads, rewraps, ...), not just on new messages.
+            # Notifying synchronously here would re-trigger "mark as read"
+            # dozens of times per second, e.g. while the user drags a window
+            # edge, even though at_bottom hasn't actually changed.
+            self._at_bottom_notify_pending = True
+
+        if self._upper_complete:
+            self._request_history_at_upper = None
+            if self._lower_complete:
+                return
+
+        if self._request_history_at_upper == adj.get_upper():
+            # Abort here if we already did a history request and the upper
+            # did not change. This can happen if we scroll very fast and the
+            # value changes while the request has not been fulfilled.
+            return
+
+        self._request_history_at_upper = None
+
+        distance = adj.get_page_size()
+        if adj.get_value() < distance:
+            # log.debug("Scrollbar near top")
+            # Load messages when we are near the top
+            if self._upper_complete:
+                return
+            self._request_history_at_upper = adj.get_upper()
+            # Workaround: https://gitlab.gnome.org/GNOME/gtk/merge_requests/395
+            self.set_kinetic_scrolling(False)
+            self._emit("request-history", "before")
+            self._requesting = "before"
+
+        elif adj.get_upper() - (adj.get_value() + adj.get_page_size()) < distance:
+            # log.debug("Scrollbar near bottom")
+            # ..or near the bottom
+            if self._lower_complete:
+                return
+            # Workaround: https://gitlab.gnome.org/GNOME/gtk/merge_requests/395
+            self.set_kinetic_scrolling(False)
+            self._emit("request-history", "after")
+            self._requesting = "after"
+
+    def _start_scrolling(self) -> None:
+        if self._scroll_end_timeout_id is None:
+            self._message_row_actions.set_scrolling(True)
+        else:
+            GLib.source_remove(self._scroll_end_timeout_id)
+
+        self._scroll_end_timeout_id = GLib.timeout_add(
+            self._SCROLL_END_DELAY, self._stop_scrolling
+        )
+
+    def _stop_scrolling(self) -> bool:
+        self._scroll_end_timeout_id = None
+
+        if self._at_bottom_notify_pending:
+            self._at_bottom_notify_pending = False
+            self._notify("at-bottom")
+
+        self._reposition_message_row_actions()
+        self._message_row_actions.set_scrolling(False)
+
+        return GLib.SOURCE_REMOVE
+
+    def _reposition_message_row_actions(self) -> None:
+        if not self._message_row_actions.get_visible():
+            return
+
+        row = self._message_row_actions.get_message_row()
+        if row is not None:
+            self._update_message_row_actions(row)
+
+    @property
+    def contact(self) -> types.ChatContactT:
+        assert self._contact is not None
+        return self._contact
+
+    def _get_row_at_index(self, index: int) -> BaseRow:
+        row = self._list_box.get_row_at_index(index)
+        assert row is not None
+        return cast(BaseRow, row)
+
+    def get_first_row(self) -> MessageRow | CallRow | FileTransferJingleRow | None:
+        for row in iterate_listbox_children(self._list_box):
+            if isinstance(row, MessageRow | CallRow | FileTransferJingleRow):
+                return row
+        return None
+
+    def get_last_row(self) -> MessageRow | CallRow | FileTransferJingleRow | None:
+        children = reversed(list(iterate_listbox_children(self._list_box)))
+        for row in children:
+            if isinstance(row, MessageRow | CallRow | FileTransferJingleRow):
+                return row
+        return None
+
+    def get_first_message_row(self) -> MessageRow | None:
+        for row in iterate_listbox_children(self._list_box):
+            if isinstance(row, MessageRow):
+                return row
+        return None
+
+    def get_last_message_row(self) -> MessageRow | None:
+        children = reversed(list(iterate_listbox_children(self._list_box)))
+        for row in children:
+            if isinstance(row, MessageRow):
+                return row
+        return None
+
+    def get_first_event_row(self) -> InfoMessage | MUCJoinLeft | None:
+        for row in iterate_listbox_children(self._list_box):
+            if isinstance(row, InfoMessage | MUCJoinLeft):
+                return row
+        return None
+
+    def get_last_event_row(self) -> InfoMessage | MUCJoinLeft | None:
+        children = reversed(list(iterate_listbox_children(self._list_box)))
+        for row in children:
+            if isinstance(row, InfoMessage | MUCJoinLeft):
+                return row
+        return None
+
+    @staticmethod
+    def _sort_func(row1: BaseRow, row2: BaseRow) -> int:
+        if row1.timestamp == row2.timestamp:
+            return 0
+        return -1 if row1.timestamp < row2.timestamp else 1
+
+    @staticmethod
+    def _get_occupant_id(obj: mod.Message | DisplayedMarkerData) -> str | None:
+        if isinstance(obj, DisplayedMarkerData):
+            if obj.occupant is None:
+                # Single chat, we don't store outgoing markers
+                return str(ChatDirection.INCOMING)
+            return obj.occupant.id
+
+        if obj.type == MessageType.CHAT:
+            # In single chat we use the direction to identify the user
+            return str(obj.direction)
+
+        if obj.occupant is None:
+            return None
+        return obj.occupant.id
+
+    def _record_last_occupant_message(
+        self, occupant_id: str, message: mod.Message
+    ) -> None:
+        last_message = self._last_occupant_messages.get(occupant_id)
+        if last_message is None or last_message.timestamp < message.timestamp:
+            self._last_occupant_messages[occupant_id] = message
+
+    def _load_displayed_marker(self) -> None:
+        assert self._contact is not None
+
+        if isinstance(self._contact, GroupchatContact):
+            markers = app.storage.archive.get_last_display_markers(
+                self._contact.account, self._contact.jid
+            )
+        else:
+            marker = app.storage.archive.get_last_display_marker(
+                self._contact.account, self._contact.jid
+            )
+            if marker is None:
+                return
+
+            markers = [marker]
+
+        for marker in markers:
+            marker = DisplayedMarkerData.from_model(self._contact.account, marker)
+            occupant_id = self._get_occupant_id(marker)
+            if occupant_id is None:
+                log.warning(
+                    "Loaded unexpected marker from database, "
+                    "unable to get occupant id: %s",
+                    marker,
+                )
+                continue
+
+            self._dm_occupant_markers[occupant_id] = marker
+            self._dm_id_occupant_markers[marker.id][occupant_id] = marker
+
+    def add_muc_subject(
+        self, subject: MucSubject, timestamp: float | None = None
+    ) -> None:
+        muc_subject = MUCSubject(self.contact.account, subject, timestamp)
+        self._insert_message(muc_subject)
+
+    def add_muc_user_left(self, event: events.MUCUserLeft, error: bool = False) -> None:
+        assert isinstance(self._contact, GroupchatContact)
+        if not self._contact.settings.get("print_join_left"):
+            return
+        join_left = MUCJoinLeft(
+            "muc-user-left",
+            self._contact.account,
+            event.nick,
+            reason=event.reason,
+            error=error,
+            timestamp=event.timestamp,
+        )
+        self._insert_message(join_left)
+
+    def add_muc_user_joined(self, event: events.MUCUserJoined) -> None:
+        assert isinstance(self._contact, GroupchatContact)
+        if not self._contact.settings.get("print_join_left"):
+            return
+        join_left = MUCJoinLeft(
+            "muc-user-joined",
+            self._contact.account,
+            event.nick,
+            timestamp=event.timestamp,
+        )
+        self._insert_message(join_left)
+
+    def add_user_status(self, name: str, show: str, status: str) -> None:
+        user_status = UserStatus(self.contact.account, name, show, status)
+        self._insert_message(user_status)
+
+    def add_info_message(self, text: str, timestamp: datetime | None = None) -> None:
+        message = InfoMessage(self.contact.account, text, timestamp)
+        self._insert_message(message)
+
+    def add_file_transfer(self, transfer: HTTPFileTransfer) -> None:
+        transfer_row = FileTransferRow(self.contact.account, transfer)
+        transfer_row.connect("remove", self._remove_row)
+        self._insert_message(transfer_row)
+
+    def add_jingle_file_transfer(
+        self,
+        event: events.FileRequestReceivedEvent | events.FileRequestSent | None = None,
+        message: Message | None = None,
+    ) -> None:
+        assert isinstance(self._contact, BareContact)
+        jingle_transfer_row = FileTransferJingleRow(
+            self._contact.account, self._contact, event=event, message=message
+        )
+        self._insert_message(jingle_transfer_row)
+
+    def add_encryption_info(self, event: events.EncryptionInfo) -> None:
+        assert self._contact is not None
+        self._insert_message(EncryptionInfoRow(event))
+
+    def add_call_message(
+        self,
+        event: events.JingleRequestReceived | None = None,
+        message: Message | None = None,
+    ) -> None:
+        assert isinstance(self._contact, BareContact)
+        call_row = CallRow(
+            self._contact.account, self._contact, event=event, message=message
+        )
+        self._insert_message(call_row)
+
+    def add_command_output(self, text: str, is_error: bool) -> None:
+        command_output_row = CommandOutputRow(self.contact.account, text, is_error)
+        self._insert_message(command_output_row)
+
+    def add_messages(self, messages: Iterable[mod.Message]) -> None:
+        for message in messages:
+            if message.filetransfers:
+                self.add_jingle_file_transfer(message=message)
+                return
+
+            if message.call is not None:
+                self.add_call_message(message=message)
+                return
+
+            self.add_message(message)
+
+    def add_message(self, message: mod.Message) -> None:
+        message_row = MessageRow.from_db_row(self.contact, message)
+        message_row.connect(
+            "state-flags-changed", self._on_message_row_state_flags_changed
+        )
+
+        # Add all message ids and stanza ids of all message revisions
+        for stanza_id in message.iter_stanza_ids():
+            self._stanza_id_row_map[stanza_id] = message_row
+
+        for message_id in message.iter_message_ids():
+            self._message_id_row_map[message_id] = message_row
+
+        self._insert_message(message_row)
+
+        if occupant_id := self._get_occupant_id(message):
+            self._record_last_occupant_message(occupant_id, message)
+            self._update_displayed_markers(message)
+
+    def _update_displayed_markers(self, message: mod.Message) -> None:
+        if message.direction == ChatDirection.INCOMING:
+            self._remove_obsolete_displayed_marker(message)
+
+        displayed_id = message.get_displayed_id()
+        if not displayed_id:
+            return
+
+        occupant_markers = self._dm_id_occupant_markers.get(displayed_id)
+        if not occupant_markers:
+            return
+
+        if message.type in (MessageType.GROUPCHAT, MessageType.PM):
+            if message.occupant is None:
+                # Dont handle messages where we have no occupant-id
+                return
+
+            # Ignore markers from the sender for his own messages
+            occupant_markers = occupant_markers.copy()
+            occupant_markers.pop(message.occupant.id, None)
+
+            markers = list(occupant_markers.values())
+            if not markers:
+                return
+
+        else:
+            marker = occupant_markers.get(str(ChatDirection.INCOMING))
+            if marker is None:
+                return
+
+            if message.direction == ChatDirection.INCOMING:
+                # Ignore markers from the sender for his own messages
+                return
+
+            markers = [marker]
+
+        # Check if we have newer messages in the view as the marker points to
+        for marker in list(markers):
+            occupant_id = self._get_occupant_id(marker)
+            if occupant_id is None:
+                # Should be impossible
+                log.warning("Unable to get occupant id: %s", marker)
+                markers.remove(marker)
+                continue
+
+            if last_message := self._last_occupant_messages.get(occupant_id):
+                if last_message.timestamp > message.timestamp:
+                    markers.remove(marker)
+
+        if not markers:
+            return
+
+        self._add_or_update_displayed_marker_row(message.timestamp, markers)
+
+    def _remove_obsolete_displayed_marker(self, message: mod.Message) -> None:
+        occupant_id = self._get_occupant_id(message)
+        assert occupant_id is not None
+
+        current_marker = self._dm_occupant_markers.get(occupant_id)
+        if current_marker is None:
+            return
+
+        if isinstance(self._contact, GroupchatContact):
+            message_row = self._stanza_id_row_map.get(current_marker.id)
+        else:
+            message_row = self._message_id_row_map.get(current_marker.id)
+
+        if message_row is None:
+            return
+
+        # Check if current marker points to newer message in the view
+        if message_row.timestamp > message.timestamp:
+            return
+
+        self._remove_displayed_marker(occupant_id)
+
+    def update_displayed_markers(self, event: events.DisplayedReceived) -> None:
+        marker = DisplayedMarkerData.from_model(event.account, event.marker)
+
+        occupant_id = self._get_occupant_id(marker)
+        if occupant_id is None:
+            log.warning("Unable to get occupant id: %s", marker)
+            return
+
+        self._remove_displayed_marker(occupant_id)
+
+        self._dm_occupant_markers[occupant_id] = marker
+        self._dm_id_occupant_markers[marker.id][occupant_id] = marker
+
+        if isinstance(self._contact, GroupchatContact):
+            message_row = self._stanza_id_row_map.get(marker.id)
+        else:
+            message_row = self._message_id_row_map.get(marker.id)
+
+        if message_row is None:
+            return
+
+        self._add_or_update_displayed_marker_row(message_row.timestamp, [marker])
+
+    def _remove_displayed_marker(self, occupant_id: str) -> None:
+        current_marker = self._dm_occupant_markers.get(occupant_id)
+        if current_marker is None:
+            return
+
+        del self._dm_occupant_markers[occupant_id]
+        del self._dm_id_occupant_markers[current_marker.id][occupant_id]
+
+        row = self._dm_rows.get(current_marker.id)
+        if row is None:
+            return
+
+        if occupant_id == str(ChatDirection.INCOMING):
+            # Single Chat
+            del self._dm_rows[current_marker.id]
+            self._remove_row(row)
+
+        else:
+            row.remove_marker(current_marker)
+            if not row.has_markers():
+                del self._dm_rows[current_marker.id]
+                self._remove_row(row)
+
+    def _add_or_update_displayed_marker_row(
+        self, timestamp: datetime, markers: list[DisplayedMarkerData]
+    ) -> DisplayedRow | None:
+        displayed_id = markers[0].id
+        row = self._dm_rows.get(displayed_id)
+        if row is not None:
+            row.add_markers(markers)
+            return None
+
+        assert self._contact is not None
+        row = DisplayedRow(self._contact.account, timestamp, markers)
+        self._dm_rows[displayed_id] = row
+        self._list_box.append(row)
+
+    def _insert_message(self, message: BaseRow) -> None:
+        self._list_box.append(message)
+
+        self._add_date_row(message.timestamp)
+        self._check_for_merge(message)
+
+    def _add_date_row(self, timestamp: datetime) -> None:
+        start_of_day = get_start_of_day(timestamp.astimezone())
+        if start_of_day in self._active_date_rows:
+            return
+
+        date_row = DateRow(self.contact.account, start_of_day)
+        self._active_date_rows.add(start_of_day)
+        self._list_box.append(date_row)
+
+        row = self._list_box.get_row_at_index(date_row.get_index() + 1)
+        if row is None:
+            return
+
+        if not isinstance(row, MessageRow):
+            return
+
+        row.set_merged(False)
+
+    def _check_for_merge(self, message: BaseRow) -> None:
+        if not isinstance(message, MessageRow):
+            return
+
+        if not app.settings.get("chat_merge_consecutive_nickname"):
+            return
+
+        ancestor = self._find_ancestor(message)
+        if ancestor is None:
+            self._update_descendants(message)
+        else:
+            message.set_merged(message.is_mergeable(ancestor))
+
+    def _find_ancestor(self, message: MessageRow) -> MessageRow | None:
+        index = message.get_index()
+        while index != 0:
+            index -= 1
+            row = self._list_box.get_row_at_index(index)
+            if row is None:
+                return None
+
+            if isinstance(row, DisplayedRow):
+                continue
+
+            if not isinstance(row, MessageRow):
+                return None
+
+            if not message.is_same_sender(row):
+                return None
+
+            if not row.is_merged:
+                return row
+        return None
+
+    def _update_descendants(self, message: MessageRow) -> None:
+        index = message.get_index()
+        while True:
+            index += 1
+            row = self._list_box.get_row_at_index(index)
+            if row is None:
+                return
+
+            if isinstance(row, DisplayedRow):
+                continue
+
+            if not isinstance(row, MessageRow):
+                return
+
+            merge = message.is_mergeable(row)
+            row.set_merged(merge)
+            return
+
+    def _on_message_row_state_flags_changed(
+        self, row: MessageRow, previous_flags: Gtk.StateFlags
+    ) -> None:
+        if self._list_box.get_selection_mode() == Gtk.SelectionMode.MULTIPLE:
+            # Message row selection active, hide MessageRowActions
+            self._message_row_actions.hide_actions()
+            return
+
+        current_flags = self.get_state_flags()
+
+        if (
+            current_flags & Gtk.StateFlags.BACKDROP
+            or previous_flags & Gtk.StateFlags.BACKDROP
+        ):
+            # Don't react to backdrop changes and focus changes when in background
+            return
+
+        if previous_flags & Gtk.StateFlags.PRELIGHT:
+            self._message_row_actions.hide_actions()
+        else:
+            self._update_message_row_actions(row)
+
+    def _update_message_row_actions(self, row: MessageRow) -> None:
+        try:
+            success, point = row.compute_point(self, Graphene.Point.zero())
+        except GLib.Error:
+            return
+
+        if not success:
+            return
+
+        if point.y + row.get_height() < 0 or point.y > self.get_height():
+            self._message_row_actions.hide_actions()
+            return
+
+        self._message_row_actions.update(point.y, row)
+
+    def remove_message(self, pk: int) -> None:
+        row = self._get_row_by_pk(pk)
+        if row is None:
+            return
+
+        self._remove_from_maps(row)
+        index = row.get_index()
+        self._remove_row(row)
+        descendant_row = self._list_box.get_row_at_index(index)
+        if isinstance(descendant_row, MessageRow):
+            # Unset possible merged state if we delete a 'top level' message.
+            # Checks for same sender etc. are not necessary, since we simply
+            # unset merged state.
+            descendant_row.set_merged(False)
+
+    def _remove_from_maps(self, row: MessageRow) -> None:
+        for key, val in dict(self._message_id_row_map).items():
+            if val is row:
+                del self._message_id_row_map[key]
+
+        for key, val in dict(self._stanza_id_row_map).items():
+            if val is row:
+                del self._stanza_id_row_map[key]
+
+    def acknowledge_message(self, event: events.MessageAcknowledged) -> None:
+        row = self._get_row_by_pk(event.pk)
+        if row is None:
+            return
+
+        if event.stanza_id is not None:
+            self._stanza_id_row_map[event.stanza_id] = row
+        row.set_acknowledged(event.pk)
+        self._check_for_merge(row)
+
+    def _determine_autoscroll(self) -> bool:
+        adj = self.get_vadjustment()
+        bottom = adj.get_upper() - adj.get_page_size()
+        return bottom - adj.get_value() < 1
+
+    def scroll_to_message(
+        self, account: str, jid: JID, timestamp: datetime, pk: int
+    ) -> None:
+
+        row = self._get_row_by_pk(pk)
+        if row is not None:
+            self._scroll_and_highlight(pk)
+            return
+
+        # The ListBox needs to be invisible, so we can set it visible again
+        # after adding the messages. This allows us to receive the ::map signal
+        # which tells us that layouting is done, and scrolling to a message
+        # will work.
+        self._list_box.set_visible(False)
+
+        messages, before_complete, after_complete = (
+            self._storage.get_conversation_around_timestamp(account, jid, timestamp)
+        )
+
+        self.reset()
+
+        self._enable_signal_handlers(False)
+        self.block_signals(True)
+        self._wait_for_map_after_scroll = True
+        self._pk_for_scroll = pk
+
+        self.add_messages(messages)
+
+        self.set_history_complete(True, before_complete)
+        self.set_history_complete(False, after_complete)
+
+        self._list_box.set_visible(True)
+
+    def _on_map(self, widget: Gtk.ListBox) -> None:
+        if not self._wait_for_map_after_scroll:
+            return
+
+        assert self._pk_for_scroll is not None
+        idle_add_once(self._scroll_after_map, self._pk_for_scroll)
+
+        self._wait_for_map_after_scroll = False
+        self._pk_for_scroll = None
+
+    def _scroll_after_map(self, pk: int) -> None:
+        log.debug("Scroll after map")
+        self._scroll_and_highlight(pk)
+        self._autoscroll = self._determine_autoscroll()
+        timeout_add_once(50, self._enable_signal_handlers, True)
+        timeout_add_once(50, self.block_signals, False)
+        timeout_add_once(60, self._notify, "at-bottom")
+
+    def _scroll_and_highlight(self, pk: int) -> None:
+        highlight_row = None
+        for row in cast(list[BaseRow], iterate_listbox_children(self._list_box)):
+            if row.pk == pk:
+                highlight_row = row
+                break
+
+        if highlight_row is None:
+            return
+
+        # Scroll ListBox to row and highlight it
+        coordinates = highlight_row.translate_coordinates(self._list_box, 0, 0)
+        if coordinates is None:
+            return
+
+        _x_coord, y_coord = coordinates
+        _minimum_site, natural_size = highlight_row.get_preferred_size()
+        adjustment = self._list_box.get_adjustment()
+        assert adjustment is not None
+        adjustment.set_value(
+            y_coord - (adjustment.get_page_size() - natural_size.height) / 2
+        )
+
+        highlight_row.remove_css_class("conversation-row-highlight")
+        highlight_row.add_css_class("conversation-row-highlight")
+
+        timeout_add_once(1500, self._remove_highlight_class, highlight_row)
+
+    def _remove_highlight_class(self, highlight_row: BaseRow) -> None:
+        highlight_row.remove_css_class("conversation-row-highlight")
+
+    def scroll_to_end(self) -> None:
+        self._scroll_to_pos_idle(self.get_vadjustment(), -1)
+
+    def _get_row_by_message_id(self, message_id: str) -> MessageRow | None:
+        return self._message_id_row_map.get(message_id)
+
+    def _get_row_by_stanza_id(self, stanza_id: str) -> MessageRow | None:
+        return self._stanza_id_row_map.get(stanza_id)
+
+    def _get_message_row_by_direction(
+        self, pk: int, direction: Direction | None = None
+    ) -> MessageRow | None:
+        row = self._get_row_by_pk(pk)
+        if row is None:
+            return None
+
+        if direction is None:
+            return row
+
+        index = row.get_index()
+        while True:
+            if direction == Direction.PREV:
+                index -= 1
+            else:
+                index += 1
+
+            row = self._list_box.get_row_at_index(index)
+            if row is None:
+                return None
+
+            if isinstance(row, MessageRow):
+                return row
+
+    def get_prev_message_row(self, pk: int | None) -> MessageRow | None:
+        if pk is None:
+            return self.get_last_message_row()
+        return self._get_message_row_by_direction(pk, direction=Direction.PREV)
+
+    def get_next_message_row(self, pk: int | None) -> MessageRow | None:
+        if pk is None:
+            return None
+        return self._get_message_row_by_direction(pk, direction=Direction.NEXT)
+
+    def _get_row_by_pk(self, pk: int) -> MessageRow | None:
+        for row in cast(list[BaseRow], iterate_listbox_children(self._list_box)):
+            if not isinstance(row, MessageRow):
+                continue
+            if pk in {row.pk, row.orig_pk}:
+                return row
+
+        return None
+
+    def iter_rows(self) -> Generator[BaseRow, None, None]:
+        yield from cast(list[BaseRow], iterate_listbox_children(self._list_box))
+
+    def _remove_row(self, row: BaseRow) -> None:
+        check_finalize(row)
+        self._list_box.remove(row)
+
+    def _remove_rows_by_type(self, row_type: str) -> None:
+        for row in self.iter_rows():
+            if row.type == row_type:
+                self._remove_row(row)
+
+    def update_call_rows(self) -> None:
+        for row in cast(list[BaseRow], iterate_listbox_children(self._list_box)):
+            if isinstance(row, CallRow):
+                row.update()
+
+    def correct_message(self, event: events.MessageCorrected) -> None:
+        message_row = self._get_row_by_message_id(event.correction_id)
+        if message_row is None:
+            return
+
+        if event.message.id is not None:
+            self._message_id_row_map[event.message.id] = message_row
+
+        if event.message.stanza_id is not None:
+            self._stanza_id_row_map[event.message.stanza_id] = message_row
+
+        message_row.update_corrections()
+
+    def update_retractions(self, retraction_id: str) -> None:
+        if isinstance(self._contact, GroupchatContact):
+            message_row = self._get_row_by_stanza_id(retraction_id)
+        else:
+            message_row = self._get_row_by_message_id(retraction_id)
+
+        if message_row is not None:
+            message_row.update_retractions()
+
+    def update_reactions(self, reaction_id: str) -> None:
+        if isinstance(self._contact, GroupchatContact):
+            message_row = self._get_row_by_stanza_id(reaction_id)
+        else:
+            message_row = self._get_row_by_message_id(reaction_id)
+
+        if message_row is not None:
+            message_row.update_reactions()
+
+    def update_blocked_muc_users(self) -> None:
+        assert self._client is not None
+        assert self._contact is not None
+        blocking_list = self._client.get_module("MucBlocking").get_blocking_list(
+            self._contact.jid
+        )
+
+        for row in self.iter_rows():
+            if not isinstance(row, MessageRow):
+                continue
+            if row.occupant_id is None:
+                continue
+            row.set_blocked(row.occupant_id in blocking_list)
+
+    def set_receipt(self, id_: str) -> None:
+        message_row = self._get_row_by_message_id(id_)
+        if message_row is None:
+            return
+
+        message_row.set_receipt(id_)
+        self._check_for_merge(message_row)
+
+    def show_error(self, id_: str, error: StanzaError) -> None:
+        message_row = self._get_row_by_message_id(id_)
+        if message_row is not None:
+            message_row.set_error(id_, to_user_string(error))
+
+    def _on_contact_setting_changed(
+        self, value: Any, setting: str, _account: str | None, _jid: JID | None
+    ) -> None:
+        if setting == "print_join_left":
+            if value:
+                return
+            self._remove_rows_by_type("muc-user-joined")
+            self._remove_rows_by_type("muc-user-left")
+
+        if setting == "print_status":
+            if value:
+                return
+            self._remove_rows_by_type("muc-user-status")

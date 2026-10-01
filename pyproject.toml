@@ -9,7 +9,7 @@ name = "gajim"
 description = "A GTK XMPP Client"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-only"
 authors = [
   {name = "Philipp Hörist", email = "philipp@hoerist.com"},
   {name = "Yann Leboulanger", email = "yann@leboulanger.org"},
@@ -28,7 +28,7 @@ dependencies = [
   "emoji>=2.6.0",
   "httpx2[http2,socks]",
   "keyring",
-  "nbxmpp>=7.3.0,<8.0.0",
+  "nbxmpp>=7.4.0,<8.0.0",
   "omemo-dr>=1.2.0,<2.0.0",
   "packaging",
   "pillow>=9.1.0",
@@ -48,9 +48,14 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+sentry = [
+  "sentry-sdk",
+]
+
 [project.urls]
 homepage = "https://gajim.org"
-repository = "https://dev.gajim.org/gajim/gajim"
+repository = "https://gitlab.com/gajim/gajim"
 
 [project.scripts]
 gajim-remote = "gajim.remote:run"
@@ -60,18 +65,20 @@ gajim = "gajim.main:run"
 
 [dependency-groups]
 dev = [
-  "codespell==2.4.2",
   "distro",
-  "nbxmpp@git+https://dev.gajim.org/gajim/python-nbxmpp.git",
-  "omemo-dr@git+https://dev.gajim.org/gajim/omemo-dr.git",
+  "flatpak_pip_generator@git+https://gitlab.com/gajim/flatpak-builder-tools.git#branch=gajim&subdirectory=pip",
+  "nbxmpp@git+https://gitlab.com/gajim/python-nbxmpp.git",
+  "omemo-dr@git+https://gitlab.com/gajim/omemo-dr.git",
   "pre-commit",
   "pygobject-stubs==2.17.0",
   "pygobject>=3.56.1",
   "pytest>=9.0.2",
   "python-gitlab",
-  "ruamel.yaml",
-  "ruff==0.15.7",
+  "reuse",
+  "ruff==0.16.2",
   "sentry-sdk",
+  "ty",
+  "typos==1.50.3",
 ]
 
 # [tool.uv.sources]
@@ -79,7 +86,7 @@ dev = [
 # nbxmpp = { path = "../python-nbxmpp", editable = true}
 
 [tool.setuptools.packages.find]
-include = ["gajim*"]
+where = ["src"]
 
 [tool.setuptools.package-data]
 gajim = ["py.typed"]
@@ -88,9 +95,37 @@ gajim = ["py.typed"]
 [tool.setuptools.dynamic]
 version = {attr = "gajim.__version__"}
 
-[tool.codespell]
-skip = "*__pycache__*,_build_root,build,debian_build,flatpak_build,dist,test,*.egg-info,.git,*.po,*.po~,*.pot,*.nsi,*.spec,./gajim/common/iana,hook-*.py"
-ignore-words-list = "claus,pres,ser,trough,THIRDPARTY,addin,selectin,FLE"
+[tool.pytest]
+minversion = "9.0"
+testpaths = [
+    "tests",
+]
+
+[tool.typos.files]
+extend-exclude = [
+  "*.patch",
+  "debian/control",
+  "po",
+  "win/misc/gajim*.nsi",
+]
+
+[tool.typos.default]
+# https://docs.rs/regex/latest/regex/index.html#syntax
+extend-ignore-re = [
+  "(?Rm)^.*(# typos: ignore)$",
+  "(?s)(# typos: ignore-file).*",
+  "(?s)(# typos: ignore-on).*(# typos: ignore-off)",
+]
+extend-ignore-words-re = [
+    "^[a-zA-Z]{1,2}$", # words with length <= 2 chars is likely noise
+]
+
+[tool.typos.default.extend-words]
+  certifi = "certifi" # A python package
+  fpr = "fpr" # Fingerprint
+  muc = "muc"
+  ofrom = "ofrom"
+  seeked = "seeked"
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -111,39 +146,36 @@ exclude = [
   "build",
   "debian_build",
   "dist",
-  "gajim/common/app.py",
-  "gajim/common/client.py",
-  "gajim/common/file_props.py",
-  "gajim/common/helpers.py",
-  "gajim/common/jingle_content.py",
-  "gajim/common/jingle_ft.py",
-  "gajim/common/jingle_ftstates.py",
-  "gajim/common/jingle_rtp.py",
-  "gajim/common/jingle_session.py",
-  "gajim/common/jingle_transport.py",
-  "gajim/common/modules/bits_of_binary.py",
-  "gajim/common/modules/bytestream.py",
-  "gajim/common/modules/contacts.py",
-  "gajim/common/modules/discovery.py",
-  "gajim/common/modules/gateway.py",
-  "gajim/common/modules/ibb.py",
-  "gajim/common/modules/jingle.py",
-  "gajim/common/modules/roster_item_exchange.py",
-  "gajim/common/modules/search.py",
-  "gajim/common/settings.py",
-  "gajim/common/socks5.py",
-  "gajim/common/structs.py",
-  "gajim/common/util/av.py",
-  "gajim/common/winapi/system_style.py",
-  "gajim/gtk/dataform.py",
-  "gajim/gtk/filetransfer.py",
-  "gajim/gtk/settings.py",
-  "gajim/gtk/start_chat.py",
-  "gajim/gtk/types.py",
-  "gajim/gtk/shortcut_manager.py",
-  "scripts/update_flatpak_manifest.py",
-  "test/common/test_uri_util.py",
-  "test/gui/test_menus.py",
+  "src/gajim/common/app.py",
+  "src/gajim/common/client.py",
+  "src/gajim/common/file_props.py",
+  "src/gajim/common/jingle_content.py",
+  "src/gajim/common/jingle_ft.py",
+  "src/gajim/common/jingle_ftstates.py",
+  "src/gajim/common/jingle_rtp.py",
+  "src/gajim/common/jingle_session.py",
+  "src/gajim/common/jingle_transport.py",
+  "src/gajim/common/modules/bits_of_binary.py",
+  "src/gajim/common/modules/bytestream.py",
+  "src/gajim/common/modules/discovery.py",
+  "src/gajim/common/modules/gateway.py",
+  "src/gajim/common/modules/ibb.py",
+  "src/gajim/common/modules/jingle.py",
+  "src/gajim/common/modules/roster_item_exchange.py",
+  "src/gajim/common/modules/search.py",
+  "src/gajim/common/settings.py",
+  "src/gajim/common/socks5.py",
+  "src/gajim/common/structs.py",
+  "src/gajim/common/util/av.py",
+  "src/gajim/common/winapi/system_style.py",
+  "src/gajim/gtk/dataform.py",
+  "src/gajim/gtk/filetransfer.py",
+  "src/gajim/gtk/settings.py",
+  "src/gajim/gtk/start_chat.py",
+  "src/gajim/gtk/types.py",
+  "src/gajim/gtk/shortcut_manager.py",
+  "tests/common/test_uri_util.py",
+  "tests/gui/test_menus.py",
   "typings/pystray/*",
   "typings/windows_toasts/*",
   "win/misc/depcheck.py",
@@ -239,6 +271,7 @@ ignore = [
   "PLR0912",# Too many branches
   "PLR0913",# Too many arguments to function call
   "PLR0915",# Too many statements
+  "PLR0917",# Too many positional arguments
   "PLR2004",# Magic value used in comparison, consider replacing x with a constant variable
   "PLR5501",# Consider using `elif` instead of `else` then `if` to remove one indentation level
   "PLW0603",# Using the global statement to update `x` is discouraged
@@ -285,25 +318,25 @@ exclude = [
   # Code Folders
   "typings",
   # legacy modules, will be removed
-  "gajim/common/jingle_ftstates.py",
-  "gajim/common/modules/bytestream.py",
-  "gajim/common/socks5.py",
+  "src/gajim/common/jingle_ftstates.py",
+  "src/gajim/common/modules/bytestream.py",
+  "src/gajim/common/socks5.py",
 ]
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
-"gajim/common/iana.py" = ["E501"]
-"gajim/common/storage/omemo.py" = ["N803"]
-"gajim/common/storage/*" = ["E501"]
-"gajim/common/modules/chatstates.py" = ["E501"]
-"gajim/gtk/types.py" = ["F401"]
-"gajim/gtk/*" = ["E501"]
-"test/*" = ["E402"]
-"test/common/test_styling.py" = ["RUF001", "E501"]
-"test/common/test_regex.py" = ["RUF001"]
-"test/database/*" = ["E501"]
+"src/gajim/common/iana.py" = ["E501"]
+"src/gajim/common/storage/omemo.py" = ["N803"]
+"src/gajim/common/storage/*" = ["E501"]
+"src/gajim/common/modules/chatstates.py" = ["E501"]
+"src/gajim/gtk/types.py" = ["F401"]
+"src/gajim/gtk/*" = ["E501"]
+"tests/*" = ["E402"]
+"tests/common/test_styling.py" = ["RUF001", "E501"]
+"tests/common/test_regex.py" = ["RUF001"]
+"tests/database/*" = ["E501"]
 "make.py" = ["S603", "S607"]
 "mac/*" = ["S603", "S607"]
 "win/*" = ["S603", "S605", "S607"]
@@ -330,3 +363,61 @@ section-order = [
 [tool.ruff.lint.isort.sections]
 gtk = ["gajim.gtk"]
 typing = ["_typeshed", "typing", "typing_extensions"]
+
+[tool.ty.environment]
+python-version = "3.12"
+python-platform = "all"
+extra-paths = ["./typings"]
+
+
+[tool.ty.rules]
+unused-type-ignore-comment = "ignore"
+
+[tool.ty.src]
+exclude = [
+  "**/__pycache__",
+  ".flatpak-builder",
+  "flatpak_build",
+  "flatpak_repo",
+  ".git",
+  ".venv",
+  "build",
+  "debian_build",
+  "dist",
+  "src/gajim/common/app.py",
+  "src/gajim/common/client.py",
+  "src/gajim/common/file_props.py",
+  "src/gajim/common/helpers.py",
+  "src/gajim/common/jingle_content.py",
+  "src/gajim/common/jingle_ft.py",
+  "src/gajim/common/jingle_ftstates.py",
+  "src/gajim/common/jingle_rtp.py",
+  "src/gajim/common/jingle_session.py",
+  "src/gajim/common/jingle_transport.py",
+  "src/gajim/common/modules/bits_of_binary.py",
+  "src/gajim/common/modules/bytestream.py",
+  "src/gajim/common/modules/discovery.py",
+  "src/gajim/common/modules/gateway.py",
+  "src/gajim/common/modules/ibb.py",
+  "src/gajim/common/modules/jingle.py",
+  "src/gajim/common/modules/roster_item_exchange.py",
+  "src/gajim/common/modules/search.py",
+  "src/gajim/common/settings.py",
+  "src/gajim/common/socks5.py",
+  "src/gajim/common/structs.py",
+  "src/gajim/common/util/av.py",
+  "src/gajim/common/winapi/system_style.py",
+  "src/gajim/gtk/dataform.py",
+  "src/gajim/gtk/filetransfer.py",
+  "src/gajim/gtk/settings.py",
+  "src/gajim/gtk/start_chat.py",
+  "src/gajim/gtk/types.py",
+  "src/gajim/gtk/shortcut_manager.py",
+  "scripts/update_flatpak_manifest.py",
+  "tests/common/test_uri_util.py",
+  "tests/gui/test_menus.py",
+  "typings/pystray/*",
+  "typings/windows_toasts/*",
+  "win/misc/depcheck.py",
+  "mac/hooks/*",
+]

@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+import logging
+
+from gi.repository import Gtk
+
+from gajim.common import app
+from gajim.common.const import AvatarSize
+from gajim.common.i18n import _
+from gajim.common.modules.contacts import GroupchatOfflineParticipant
+from gajim.common.modules.contacts import GroupchatParticipant
+from gajim.common.util.user_strings import get_uf_affiliation
+
+from gajim.gtk.builder import get_builder
+from gajim.gtk.util.misc import container_remove_all
+from gajim.gtk.util.misc import iterate_children
+from gajim.gtk.widgets import HatBadge
+
+log = logging.getLogger("gajim.gtk.tooltips")
+
+
+class GCTooltip:
+    def __init__(self) -> None:
+        self._contact: GroupchatParticipant | GroupchatOfflineParticipant | None = None
+
+    def clear_tooltip(self) -> None:
+        self._contact = None
+
+    def get_tooltip(
+        self, contact: GroupchatParticipant | GroupchatOfflineParticipant
+    ) -> tuple[bool, Gtk.Grid]:
+        if not hasattr(self, "_ui"):
+            self._ui = get_builder("groupchat_roster_tooltip.ui")
+
+        if self._contact == contact:
+            return True, self._ui.tooltip_grid
+
+        self._populate_grid(contact)
+        self._contact = contact
+        return False, self._ui.tooltip_grid
+
+    def _hide_grid_children(self) -> None:
+        """
+        Hide all Elements of the Tooltip Grid
+        """
+        for widget in iterate_children(self._ui.tooltip_grid):
+            widget.set_visible(False)
+
+    def _populate_grid(
+        self, contact: GroupchatParticipant | GroupchatOfflineParticipant
+    ) -> None:
+        """
+        Populate the Tooltip Grid with data of from the contact
+        """
+        self._hide_grid_children()
+
+        self._ui.nick.set_text(contact.name)
+        self._ui.nick.set_visible(True)
+
+        # Status Message
+        if contact.status:
+            status = contact.status.strip()
+            if status != "":
+                self._ui.status.set_text(status)
+                self._ui.status.set_visible(True)
+
+        # JID
+        if contact.real_jid is not None:
+            self._ui.jid.set_text(contact.real_jid.to_user_string())
+            self._ui.jid.set_visible(True)
+
+        # Affiliation
+        if not contact.affiliation.is_none:
+            uf_affiliation = get_uf_affiliation(contact.affiliation)
+            uf_affiliation = _("%(owner_or_admin_or_member)s of this group chat") % {
+                "owner_or_admin_or_member": uf_affiliation
+            }
+            self._ui.affiliation.set_text(uf_affiliation)
+            self._ui.affiliation.set_visible(True)
+
+        if contact.hats is not None:
+            container_remove_all(self._ui.hats_box)
+
+            for hat in contact.hats.get_hats()[:5]:
+                # Limit to 5 hats
+                hat_badge = HatBadge(hat)
+                self._ui.hats_box.append(hat_badge)
+                self._ui.hats_box.set_visible(True)
+
+        # Avatar
+        scale = self._ui.tooltip_grid.get_scale_factor()
+        texture = contact.get_avatar(AvatarSize.TOOLTIP, scale)
+        self._ui.avatar.set_pixel_size(AvatarSize.TOOLTIP)
+        self._ui.avatar.set_from_paintable(texture)
+        self._ui.avatar.set_visible(True)
+        self._ui.fillelement.set_visible(True)
+
+        app.plugin_manager.extension_point(
+            "gc_tooltip_populate", self, contact, self._ui.tooltip_grid
+        )

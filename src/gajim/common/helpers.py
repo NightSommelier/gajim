@@ -1,0 +1,379 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+from typing import Any
+from typing import TYPE_CHECKING
+from typing import TypeVar
+
+import hashlib
+import inspect
+import json
+import logging
+import socket
+import uuid
+import weakref
+from collections import defaultdict
+from collections.abc import Callable
+from pathlib import Path
+from string import Template
+
+import qrcode
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from gi.repository import Gdk
+from gi.repository import GdkPixbuf
+from gi.repository import Gio
+from gi.repository import GLib
+from nbxmpp.const import ConnectionProtocol
+from nbxmpp.const import ConnectionType
+from nbxmpp.errors import StanzaError
+from nbxmpp.namespaces import Namespace
+from nbxmpp.structs import CommonError
+from nbxmpp.structs import ProxyData
+from qrcode.image.pil import PilImage as QrcPilImage
+
+from gajim.common import app
+from gajim.common import types
+from gajim.common.util.standards import get_rfc5646_lang
+from gajim.common.util.text import get_random_string
+
+if TYPE_CHECKING:
+    from gajim.common.modules.util import LogAdapter
+
+
+log = logging.getLogger("gajim.c.helpers")
+
+KeyType = TypeVar("KeyType")
+
+
+def generate_qr_code(content: str) -> Gdk.Texture:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=6,
+        border=2,
+    )
+    qr.add_data(content)
+    qr.make(fit=True)
+
+    img = qr.make_image(image_factory=QrcPilImage).convert("RGB")
+    pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(
+        GLib.Bytes.new(img.tobytes()),
+        GdkPixbuf.Colorspace.RGB,
+        False,
+        8,
+        img.width,
+        img.height,
+        img.width * 3,
+    )
+    return Gdk.Texture.new_for_pixbuf(pixbuf)
+
+
+def get_auth_sha(sid: str, initiator: str, target: str) -> str:
+    """
+    Return sha of sid + initiator + target used for proxy auth
+    """
+    return hashlib.sha1((f"{sid}{initiator}{target}").encode()).hexdigest()
+
+
+def allow_showing_notification(account: str) -> bool:
+    if not app.settings.get("show_notifications"):
+        return False
+    if app.settings.get("show_notifications_away"):
+        return True
+    client = app.get_client(account)
+    return client.status == "online"
+
+
+def get_optional_features(account: str) -> list[str]:
+    features: list[str] = []
+
+    if app.settings.get_account_setting(account, "request_user_data"):
+        features.append(Namespace.TUNE + "+notify")
+        features.append(Namespace.LOCATION + "+notify")
+
+    features.append(Namespace.NICK + "+notify")
+
+    client = app.get_client(account)
+
+    if client.get_module("Bookmarks").native_bookmarks_used:
+        features.append(Namespace.BOOKMARKS_1 + "+notify")
+    elif client.get_module("Bookmarks").pep_bookmarks_used:
+        features.append(Namespace.BOOKMARKS + "+notify")
+    # if app.is_installed("AV"):
+    #     features.append(Namespace.JINGLE_RTP)
+    #     features.append(Namespace.JINGLE_RTP_AUDIO)
+    #     features.append(Namespace.JINGLE_RTP_VIDEO)
+    #     features.append(Namespace.JINGLE_ICE_UDP)
+
+    # Give plugins the possibility to add their features
+    app.plugin_manager.extension_point("update_caps", account, features)
+    return features
+
+
+def get_global_proxy() -> ProxyData | None:
+    proxy_name = app.settings.get("global_proxy")
+    if not proxy_name:
+        return None
+    return get_proxy(proxy_name)
+
+
+def get_account_proxy(account: str, fallback: bool = True) -> ProxyData | None:
+    proxy_name = app.settings.get_account_setting(account, "proxy")
+    if proxy_name:
+        return get_proxy(proxy_name)
+
+    if fallback:
+        return get_global_proxy()
+    return None
+
+
+def get_proxy(proxy_name: str) -> ProxyData | None:
+    if proxy_name == "no-proxy":
+        return ProxyData(type="direct", host="", username=None, password=None)
+
+    try:
+        settings = app.settings.get_proxy_settings(proxy_name)
+    except ValueError:
+        return None
+
+    username, password = None, None
+    if settings["useauth"]:
+        username, password = settings["user"], settings["pass"]
+
+    return ProxyData(
+        type=settings["type"],  # type: ignore
+        host=f"{settings['host']}:{settings['port']}",
+        username=username,  # type: ignore
+        password=password,  # type: ignore
+    )
+
+
+def determine_proxy(account: str | None = None) -> ProxyData | None:
+
+    if account is not None:
+        return get_account_proxy(account)
+
+    global_proxy = get_global_proxy()
+    if global_proxy is not None:
+        return global_proxy
+
+    # When there is no global proxy and at least one active account does
+    # not use a proxy, we assume no proxy is necessary.
+
+    proxies: list[ProxyData] = []
+    for client in app.get_clients():
+        account_proxy = get_account_proxy(client.account, fallback=False)
+        if account_proxy is None:
+            return None
+
+        proxies.append(account_proxy)
+
+    return proxies[0] if proxies else None
+
+
+def load_json(path: Path, key: str | None = None, default: Any | None = None) -> Any:
+    try:
+        with path.open("r", encoding="utf8") as file:
+            json_dict = json.loads(file.read())
+    except Exception:
+        log.exception("Parsing error")
+        return default
+
+    if key is None:
+        return json_dict
+    return json_dict.get(key, default)
+
+
+def dump_json(path: Path, data: dict[Any, Any]) -> None:
+    """Save a JSON-serializable object to a .json file."""
+    try:
+        with path.open("w", encoding="utf8") as file:
+            json.dump(data, file)
+    except Exception:
+        log.exception("Error while trying to dump JSON")
+
+
+def get_resource(account: str) -> str | None:
+    resource = app.settings.get_account_setting(account, "resource")
+    if not resource:
+        return None
+
+    resource = Template(resource).safe_substitute(
+        {"hostname": socket.gethostname(), "rand": get_random_string()}
+    )
+    app.settings.set_account_setting(account, "resource", resource)
+    return resource
+
+
+def to_user_string(error: CommonError | StanzaError) -> str:
+    text = error.get_text(get_rfc5646_lang())
+    if text:
+        return text
+
+    condition = error.condition
+    if error.app_condition is not None:
+        return f"{condition} ({error.app_condition})"
+
+    assert condition is not None
+    return condition
+
+
+class Observable:
+    def __init__(self, log_: logging.Logger | LogAdapter | None = None):
+        self._log = log_ or log
+        self._callbacks: types.ObservableCbDict = defaultdict(list)
+
+    def get_logger(self) -> logging.Logger | LogAdapter:
+        return self._log
+
+    def __disconnect(self, obj: Any, signals: set[str] | None = None) -> None:
+
+        def _remove(handlers: list[weakref.WeakMethod[types.AnyCallableT]]) -> None:
+
+            for handler in list(handlers):
+                func = handler()
+                # Don’t remove dead weakrefs from the handler list
+                # notify() will remove dead refs, and __disconnect()
+                # can be called from inside notify(), this can lead
+                # to race conditions where later notify tries to remove
+                # a dead ref which is not anymore in the list.
+                if func is not None and func.__self__ is obj:  # type: ignore
+                    handlers.remove(handler)
+
+        if signals is None:
+            for handlers in self._callbacks.values():
+                _remove(handlers)
+
+        else:
+            for signal in signals:
+                _remove(self._callbacks.get(signal, []))
+
+    def disconnect_signals(self) -> None:
+        self._callbacks = defaultdict(list)
+
+    def multi_disconnect(self, obj: Any, signals: set[str] | None) -> None:
+
+        self.__disconnect(obj, signals)
+
+    def disconnect_all_from_obj(self, obj: Any) -> None:
+        self.__disconnect(obj)
+
+    def disconnect(self, obj: Any) -> None:
+        self.disconnect_all_from_obj(obj)
+
+    def disconnect_signal(self, obj: Any, signal: str) -> None:
+        self.__disconnect(obj, {signal})
+
+    def connect_signal(self, signal_name: str, func: types.AnyCallableT) -> None:
+        if not inspect.ismethod(func):
+            raise ValueError("Only bound methods allowed")
+
+        weak_func = weakref.WeakMethod(func)
+
+        if weak_func in self._callbacks[signal_name]:
+            # Don’t register handler multiple times
+            return
+
+        self._callbacks[signal_name].append(weak_func)
+
+    def connect(self, signal_name: str, func: types.AnyCallableT) -> None:
+        self.connect_signal(signal_name, func)
+
+    def multi_connect(self, signal_dict: dict[str, types.AnyCallableT]):
+        for signal_name, func in signal_dict.items():
+            self.connect_signal(signal_name, func)
+
+    def notify(self, signal_name: str, *args: Any, **kwargs: Any):
+        signal_callbacks = self._callbacks.get(signal_name)
+        if not signal_callbacks:
+            return
+
+        self._log.info("Signal: %s", signal_name)
+
+        for weak_method in list(signal_callbacks):
+            func = weak_method()
+            if func is None:
+                self._callbacks[signal_name].remove(weak_method)
+                continue
+            func(self, signal_name, *args, **kwargs)
+
+
+def get_x509_cert_from_gio_cert(cert: Gio.TlsCertificate) -> x509.Certificate:
+    cert_bytes = GLib.ByteArray.free_to_bytes(cert.props.certificate).get_data()
+    assert cert_bytes is not None
+    return x509.load_der_x509_certificate(cert_bytes, default_backend())
+
+
+def get_custom_host(
+    account: str,
+) -> tuple[str, ConnectionProtocol, ConnectionType] | None:
+
+    if not app.settings.get_account_setting(account, "use_custom_host"):
+        return None
+    host = app.settings.get_account_setting(account, "custom_host")
+    port = app.settings.get_account_setting(account, "custom_port")
+    type_ = app.settings.get_account_setting(account, "custom_type")
+
+    if host.startswith(("ws://", "wss://")):
+        protocol = ConnectionProtocol.WEBSOCKET
+    else:
+        host = f"{host}:{port}"
+        protocol = ConnectionProtocol.TCP
+
+    return (host, protocol, ConnectionType(type_))
+
+
+def warn_about_plain_connection(
+    account: str, connection_types: list[ConnectionType]
+) -> bool:
+    warn = app.settings.get_account_setting(account, "confirm_unencrypted_connection")
+    return any(type_.is_plain and warn for type_ in connection_types)
+
+
+def get_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def idle_add_once(func: Callable[..., Any], *args: Any) -> None:
+    def wrapper():
+        func(*args)
+        return False
+
+    GLib.idle_add(wrapper)
+
+
+def timeout_add_once(ms: int, func: Callable[..., Any], *args: Any) -> None:
+    def wrapper():
+        func(*args)
+        return False
+
+    GLib.timeout_add(ms, wrapper)
+
+
+def timeout_add_seconds_once(sec: int, func: Callable[..., Any], *args: Any) -> None:
+    def wrapper():
+        func(*args)
+        return False
+
+    GLib.timeout_add_seconds(sec, wrapper)
+
+
+def deep_update(
+    mapping: dict[KeyType, Any], *updating_mappings: dict[KeyType, Any]
+) -> dict[KeyType, Any]:
+    updated_mapping = mapping.copy()
+    for updating_mapping in updating_mappings:
+        for k, v in updating_mapping.items():
+            if (
+                k in updated_mapping
+                and isinstance(updated_mapping[k], dict)
+                and isinstance(v, dict)
+            ):
+                updated_mapping[k] = deep_update(updated_mapping[k], v)  # type: ignore
+            else:
+                updated_mapping[k] = v
+    return updated_mapping

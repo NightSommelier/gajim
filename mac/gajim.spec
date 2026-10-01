@@ -1,5 +1,9 @@
 # -*- mode: python -*-
 
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
 import typing
 
 import sys
@@ -71,9 +75,9 @@ gst_include_plugins = [
 ]
 
 a = Analysis(
-    ["launch.py"],
+    ["mac/launch.py"],
     pathex=[cwd],
-    datas=[("gajim", "gajim")],
+    datas=[("gajim", "gajim")],  # typos: ignore
     hiddenimports=hiddenimports,
     hookspath=[os.path.join(os.getcwd(), "mac", "hooks")],
     hooksconfig={
@@ -113,10 +117,10 @@ exe = EXE(
 )
 
 coll = COLLECT(
-    exe, a.binaries, a.zipfiles, a.datas, strip=False, upx=True, name="launch"
+    exe, a.binaries, a.zipfiles, a.datas, strip=False, upx=True, name="launch"  # typos: ignore
 )
 
-app = BUNDLE(  # pyright: ignore
+app = BUNDLE(  # type: ignore
     coll,
     name="Gajim.app",
     icon=icon,

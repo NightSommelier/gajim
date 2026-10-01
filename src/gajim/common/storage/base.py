@@ -1,0 +1,594 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+from typing import Any
+from typing import cast
+from typing import Concatenate
+from typing import ParamSpec
+from typing import TypeVar
+
+import dataclasses
+import json
+import logging
+import math
+import os
+import pprint
+import sqlite3
+import sys
+import time
+from collections.abc import Callable
+from collections.abc import Iterator
+from datetime import datetime
+from datetime import UTC
+from pathlib import Path
+
+import nbxmpp.const
+import sqlalchemy as sa
+import sqlalchemy.exc
+from gi.repository import GLib
+from nbxmpp.const import Affiliation
+from nbxmpp.const import Role
+from nbxmpp.const import StatusCode
+from nbxmpp.modules.discovery import parse_disco_info
+from nbxmpp.protocol import Iq
+from nbxmpp.protocol import JID
+from nbxmpp.structs import CommonError
+from nbxmpp.structs import DiscoInfo
+from nbxmpp.structs import RosterItem
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+from sqlalchemy.engine.interfaces import DBAPIConnection
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import ORMExecuteState
+from sqlalchemy.orm import Session
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.expression import ClauseElement
+from sqlalchemy.sql.expression import Executable
+
+from gajim.common.const import Draft
+from gajim.common.const import ValueMissingT
+from gajim.common.util.version import python_version
+
+log = logging.getLogger("gajim.c.storage")
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def timeit(func: Callable[P, R]) -> Callable[P, R]:
+    def func_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        if log.getEffectiveLevel() != logging.DEBUG:
+            return func(*args, **kwargs)
+
+        start = time.time()
+        result = func(*args, **kwargs)
+        exec_time = (time.time() - start) * 1e3
+        log.debug("Execution time for %s: %s ms", func.__name__, math.ceil(exec_time))
+        return result
+
+    return func_wrapper
+
+
+def with_session(
+    func: Callable[Concatenate[Any, Session, P], R],
+) -> Callable[Concatenate[Any, P], R]:
+    def wrapper(self: Any, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._create_session() as session, session.begin():
+            return func(self, session, *args, **kwargs)
+
+    return wrapper
+
+
+def with_session_yield_from(
+    func: Callable[Concatenate[Any, Session, P], Iterator[R]],
+) -> Callable[Concatenate[Any, P], Iterator[Any]]:
+    def wrapper(self: Any, *args: P.args, **kwargs: P.kwargs) -> Iterator[R]:
+        with self._create_session() as session, session.begin():
+            yield from func(self, session, *args, **kwargs)
+
+    return wrapper
+
+
+def _convert_common_error(common_error: bytes) -> CommonError:
+    return CommonError.from_string(common_error)
+
+
+def _adapt_common_error(common_error: CommonError) -> str:
+    return common_error.serialize()
+
+
+sqlite3.register_converter("common_error", _convert_common_error)
+sqlite3.register_adapter(CommonError, _adapt_common_error)
+
+
+def _convert_marker(marker: bytes):
+    return "received" if int(marker) == 0 else "displayed"
+
+
+sqlite3.register_converter("marker", _convert_marker)
+
+
+def _jid_adapter(jid: JID) -> str:
+    return str(jid)
+
+
+def _jid_converter(jid: bytes) -> JID:
+    return JID.from_string(jid.decode())
+
+
+sqlite3.register_converter("jid", _jid_converter)
+sqlite3.register_adapter(JID, _jid_adapter)
+
+
+def _convert_disco_info(disco_info: bytes) -> DiscoInfo:
+    return parse_disco_info(Iq(node=disco_info))  # type: ignore
+
+
+def _adapt_disco_info(disco_info: DiscoInfo) -> str:
+    return str(disco_info.stanza)
+
+
+sqlite3.register_converter("disco_info", _convert_disco_info)
+sqlite3.register_adapter(DiscoInfo, _adapt_disco_info)
+
+
+def _convert_json(json_string: bytes) -> dict[str, Any]:
+    return json.loads(json_string, object_hook=json_decoder)
+
+
+sqlite3.register_converter("JSON", _convert_json)
+
+
+def _datetime_converter(data: bytes) -> datetime:
+    return datetime.fromisoformat(data.decode())
+
+
+sqlite3.register_converter("datetime", _datetime_converter)
+
+
+sqlite3.register_adapter(ValueMissingT, lambda _val: None)
+
+
+class Encoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if isinstance(o, set):
+            return list(o)  # type: ignore
+
+        if isinstance(o, datetime):
+            return {"__type": "datetime", "value": o.isoformat()}
+
+        if isinstance(o, JID):
+            return {"__type": "JID", "value": str(o)}
+
+        if isinstance(o, RosterItem):
+            dct = o.asdict()
+            dct["__type"] = "RosterItem"
+            return dct
+
+        if isinstance(o, Affiliation | Role | StatusCode):
+            return {"value": o.value, "__type": o.__class__.__name__}
+
+        return json.JSONEncoder.default(self, o)
+
+
+def json_decoder(dct: dict[str, Any]) -> Any:
+    type_ = dct.get("__type")
+    if type_ is None:
+        return dct
+
+    if type_ == "JID":
+        return JID.from_string(dct["value"])
+
+    if type_ == "datetime":
+        return datetime.fromisoformat(dct["value"])
+
+    if type_ == "RosterItem":
+        return RosterItem(
+            jid=dct["jid"],
+            name=dct["name"],
+            ask=dct["ask"],
+            subscription=dct["subscription"],
+            approved=dct["approved"],
+            groups=set(dct["groups"]),
+        )
+
+    if type_ in ("Affiliation", "Role", "StatusCode"):
+        return getattr(nbxmpp.const, type_)(dct["value"])
+
+    return dct
+
+
+class Explain(Executable, ClauseElement):
+    inherit_cache = False
+
+    def __init__(self, stmt: Executable) -> None:
+        self.statement = stmt
+
+
+@compiles(Explain, "sqlite")
+def sqlite_explain(element: Any, compiler: SQLCompiler, **kw: Any):
+    compiled = compiler.process(element.statement, **kw)
+    return f"EXPLAIN QUERY PLAN {compiled}"
+
+
+def _do_orm_execute(orm_execute_state: ORMExecuteState) -> None:
+    stmt = orm_execute_state.statement
+    if not stmt.is_select and not stmt.is_delete:
+        return
+
+    res = orm_execute_state.session.execute(
+        Explain(stmt), params=orm_execute_state.parameters
+    ).all()
+    explanation = pprint.pformat(res)
+    log.debug("EXPLANATION\n%s\n%s", explanation, stmt)
+
+
+if os.environ.get("GAJIM_DEBUG_SQL"):
+    event.listen(Session, "do_orm_execute", _do_orm_execute)
+
+
+class SqliteStorage:
+    """
+    Base Storage Class
+    """
+
+    def __init__(
+        self,
+        log: logging.Logger,
+        path: Path | None,
+        create_statement: str,
+        commit_delay: int = 500,
+    ) -> None:
+        self._log = log
+        self._path = path
+        self._create_statement = create_statement
+        self._commit_delay = commit_delay
+        self._con = cast(sqlite3.Connection, None)
+        self._commit_source_id = None
+
+    def init(self, **kwargs: Any) -> None:
+        if self._path is None or not self._path.exists():
+            self._con = self._create_storage(**kwargs)
+
+        else:
+            if not self._path.is_file():
+                sys.exit("%s must be a file" % self._path)
+            self._con = self._connect(**kwargs)
+
+        self._migrate_storage()
+
+    def get_connection(self) -> sqlite3.Connection:
+        # Use this only for unittests
+        return self._con
+
+    def _enable_foreign_keys(self) -> None:
+        self._con.execute("PRAGMA foreign_keys=ON")
+
+    def _set_journal_mode(self, mode: str) -> None:
+        self._con.execute(f"PRAGMA journal_mode={mode}")
+
+    def _set_synchronous(self, mode: str) -> None:
+        self._con.execute(f"PRAGMA synchronous={mode}")
+
+    def _enable_secure_delete(self) -> None:
+        self._con.execute("PRAGMA secure_delete=1")
+
+    def _run_optimize(self) -> None:
+        self._con.execute("PRAGMA optimize")
+
+    @property
+    def user_version(self) -> int:
+        return self._con.execute("PRAGMA user_version").fetchone()[0]
+
+    def _connect(self, **kwargs: Any) -> sqlite3.Connection:
+        self._log.info("Connect to %s", self._path)
+        return sqlite3.connect(self._path or ":memory:", **kwargs)
+
+    def _create_storage(self, **kwargs: Any) -> sqlite3.Connection:
+        self._log.info("Creating %s", self._path or "in memory")
+
+        con = self._connect(**kwargs)
+
+        if self._path is not None:
+            self._path.chmod(0o600)
+
+        try:
+            con.executescript(self._create_statement)
+        except Exception:
+            self._log.exception("Error")
+            con.close()
+            if self._path is not None:
+                self._path.unlink()
+            sys.exit("Failed creating storage")
+
+        con.commit()
+        return con
+
+    def _reinit_storage(self) -> None:
+        self._con.close()
+        if self._path is not None:
+            self._path.unlink()
+        self.init()
+
+    def _migrate_storage(self) -> None:
+        try:
+            self._migrate()
+        except Exception:
+            self._con.close()
+            self._log.exception("Error")
+            sys.exit()
+
+    def _migrate(self) -> None:
+        raise NotImplementedError
+
+    def _execute_multiple(self, statements: list[str]) -> None:
+        """
+        Execute multiple statements with the option to fail on duplicates
+        but still continue
+        """
+        for sql in statements:
+            try:
+                self._con.execute(sql)
+                self._con.commit()
+            except sqlite3.OperationalError as error:
+                if str(error).startswith("duplicate column name:"):
+                    self._log.info(error)
+                else:
+                    self._con.close()
+                    self._log.exception("Error")
+                    sys.exit()
+
+    @timeit
+    def _commit(self) -> bool:
+        self._commit_source_id = None
+        self._con.commit()
+        return False
+
+    def _delayed_commit(self) -> None:
+        if self._commit_source_id is not None:
+            return
+
+        self._commit_source_id = GLib.timeout_add(self._commit_delay, self._commit)
+
+    def shutdown(self) -> None:
+        if self._commit_source_id is not None:
+            GLib.source_remove(self._commit_source_id)
+
+        self._commit()
+        self._run_optimize()
+        self._con.close()
+        del self._con
+
+
+class AlchemyStorage:
+    def __init__(
+        self,
+        log: logging.Logger,
+        path: Path | None,
+        pragma: dict[str, str] | None = None,
+    ) -> None:
+        self._log = log
+        self._path = path
+        self._engine = self._create_engine()
+        self._commit_source_id = None
+        self._pragma = pragma or {}
+
+    def init(self) -> None:
+        if self._path is None or not self._path.exists():
+            self._create_storage()
+
+        elif not self._path.is_file():
+            sys.exit("%s must be a file" % self._path)
+
+        self._migrate_storage()
+
+    def get_session(self) -> Session:
+        return self._create_session()
+
+    def get_engine(self) -> Engine:
+        return self._engine
+
+    def _dbapi_execute_multiple(
+        self,
+        statements: list[str],
+        *,
+        dbapi_connection: DBAPIConnection | None = None,
+    ) -> None:
+        if dbapi_connection is None:
+            dbapi_connection = self._engine.raw_connection().dbapi_connection
+            assert dbapi_connection is not None
+
+        # the sqlite3 driver will not set PRAGMA if autocommit=False
+        # also VACUUM does not work with
+        dbapi_connection.autocommit = True
+
+        cursor = dbapi_connection.cursor()
+        for stmt in statements:
+            cursor.execute(stmt)
+        cursor.close()
+
+        dbapi_connection.autocommit = False
+
+    def set_user_version(self, version: int) -> None:
+        self._dbapi_execute_multiple([f"PRAGMA user_version={version}"])
+
+    def set_foreign_keys(self, enabled: bool) -> None:
+        self._dbapi_execute_multiple([f"PRAGMA foreign_keys={int(enabled)}"])
+
+    def _on_db_connect(
+        self, dbapi_connection: DBAPIConnection, _connection_record: Any
+    ) -> None:
+        stmts = ["PRAGMA foreign_keys=1"]
+        stmts += [f"PRAGMA {key}={value}" for key, value in self._pragma.items()]
+        self._dbapi_execute_multiple(stmts, dbapi_connection=dbapi_connection)
+
+    def run_analyze(self) -> None:
+        self._dbapi_execute_multiple(["PRAGMA analysis_limit=0", "ANALYZE"])
+
+    def _run_optimize(self) -> None:
+        self._dbapi_execute_multiple(["PRAGMA optimize", "VACUUM"])
+
+    def get_user_version(self) -> int:
+        with self._create_session() as s:
+            return s.scalar(sa.text("PRAGMA user_version"))
+
+    def _create_engine(self) -> Engine:
+        self._log.info("Create engine")
+
+        con_str = "sqlite://"
+        if self._path is not None:
+            con_str += f"/{self._path}"
+
+        engine = sa.create_engine(
+            con_str, connect_args={"check_same_thread": False}, echo=False
+        )
+        event.listen(engine, "connect", self._on_db_connect)
+        return engine
+
+    def _create_session(self) -> Session:
+        return sessionmaker(
+            expire_on_commit=False, autoflush=False, bind=self._engine
+        )()
+
+    def _create_storage(self) -> None:
+        self._log.info("Creating %s", self._path or "in memory")
+
+        with self._create_session() as s:
+            try:
+                self._create_table(s, self._engine)
+            except Exception:
+                self._log.exception("Error")
+                if self._path is not None:
+                    self._path.unlink()
+                sys.exit("Failed creating storage")
+
+        if self._path is not None:
+            self._path.chmod(0o600)
+
+    def _create_table(self, session: Session, engine: Engine) -> None:
+        raise NotImplementedError
+
+    def _reinit_storage(self) -> None:
+        self._engine.dispose()
+        if self._path is not None:
+            self._path.unlink()
+        self._engine = self._create_engine()
+        self.init()
+
+    def _migrate_storage(self) -> None:
+        try:
+            self._migrate()
+        except Exception:
+            self._log.exception("Migration error")
+            raise
+
+    def _migrate(self) -> None:
+        raise NotImplementedError
+
+    @with_session
+    @timeit
+    def refresh(self, session: Session, obj: Any, attrs: list[str]) -> None:
+        session.add(obj)
+        session.refresh(obj, attribute_names=attrs)
+
+    def shutdown(self) -> None:
+        self._run_optimize()
+        self._engine.dispose()
+        del self._engine
+
+
+class JIDType(sa.types.TypeDecorator[JID]):
+    impl = sa.types.TEXT
+    cache_ok = True
+
+    def process_bind_param(self, value: JID | None, dialect: Any) -> str | None:
+        if value is None:
+            return value
+        return str(value)
+
+    def process_result_value(self, value: str | None, dialect: Any) -> JID | None:
+        if value is None:
+            return value
+        return JID.from_string(value)
+
+
+class StrValueMissingType(sa.types.TypeDecorator[Any]):
+    impl = sa.types.TEXT
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: str | ValueMissingT | None, dialect: Any
+    ) -> str | None:
+        if isinstance(value, ValueMissingT):
+            return None
+        return value
+
+
+class EpochTimestampType(sa.types.TypeDecorator[Any]):
+    impl = sa.types.FLOAT
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: datetime | ValueMissingT | None, dialect: Any
+    ) -> float | None:
+        if value is None or isinstance(value, ValueMissingT):
+            return None
+
+        if value.tzinfo != UTC:
+            raise ValueError("DateTime must be UTC")
+        return value.timestamp()
+
+    def process_result_value(
+        self, value: float | None, dialect: Any
+    ) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value, UTC)
+
+
+class JSONType(sa.types.TypeDecorator[Any]):
+    impl = sa.types.TEXT
+    cache_ok = True
+
+    def process_bind_param(self, value: dict[str, Any] | None, dialect: Any):
+        if value is not None:
+            return json.dumps(value)
+        return value
+
+    def process_result_value(self, value: str | None, dialect: Any):
+        if value is not None:
+            return json.loads(value)
+        return value
+
+
+class DraftType(sa.types.TypeDecorator[Any]):
+    impl = sa.types.TEXT
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: Draft | ValueMissingT | None, dialect: Any
+    ) -> str | None:
+        if isinstance(value, ValueMissingT) or value is None:
+            return None
+        return json.dumps(dataclasses.asdict(value))
+
+    def process_result_value(self, value: str | None, dialect: Any) -> Draft | None:
+        if value is None:
+            return None
+        return Draft(**json.loads(value))
+
+
+def is_unique_constraint_error(error: sqlalchemy.exc.DatabaseError) -> bool:
+    if not isinstance(error, sqlalchemy.exc.IntegrityError):
+        return False
+
+    if python_version("<3.11"):
+        return "UNIQUE constraint failed" in error.args[0]
+    return (
+        error.orig.sqlite_errorcode  # type: ignore
+        == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+    )

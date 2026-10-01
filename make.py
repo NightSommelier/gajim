@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +24,7 @@ CONFIG_VALUES = {
     "FLATPAK_NIGHTLY": "False",
 }
 
-CONFIG = Path("gajim/config.py.in")
+CONFIG = Path("src/gajim/config.py.in")
 METAINFO = Path("data/org.gajim.Gajim.metainfo.xml.in")
 DESKTOP = Path("data/org.gajim.Gajim.desktop.in")
 METADATA = Path("dist/metadata")
@@ -33,16 +37,16 @@ META_FILES = [
 ]
 
 ICONS = [
-    Path("gajim/data/icons/hicolor/scalable/apps/gajim.svg"),
-    Path("gajim/data/icons/hicolor/scalable/apps/gajim-symbolic.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-away.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-chat.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-connecting.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-dnd.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-message-new.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-offline.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-online.svg"),
-    Path("gajim/data/icons/hicolor/scalable/status/gajim-status-xa.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/apps/gajim.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/apps/gajim-symbolic.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-away.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-chat.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-connecting.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-dnd.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-message-new.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-offline.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-online.svg"),
+    Path("src/gajim/data/icons/hicolor/scalable/status/gajim-status-xa.svg"),
 ]
 
 INSTALL_FILES = {
@@ -134,7 +138,7 @@ def build_app_icons() -> None:
 def build_translations() -> None:
     # Compile translation files and place them into "gajim/data/locale"
 
-    source_dir = Path.cwd()
+    source_dir = Path.cwd() / "src"
     translation_dir = source_dir / "po"
     locale_dir = source_dir / "gajim" / "data" / "locale"
 

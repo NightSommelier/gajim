@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+from typing import Any
+from typing import cast
+from typing import Generic
+from typing import TypeVar
+
+from gi.repository import Gio
+from gi.repository import GObject
+from gi.repository import Gtk
+from gi.repository import Pango
+
+from gajim.common import app
+
+_K = TypeVar("_K")
+
+
+class GajimDropDown(Gtk.DropDown, Generic[_K]):
+    __gtype_name__ = "GajimDropDown"
+
+    def __init__(
+        self,
+        data: dict[Any, str] | list[str] | None = None,
+        fixed_width: int = -1,
+    ) -> None:
+        Gtk.DropDown.__init__(self)
+
+        self._model: Gio.ListStore[KeyValueItem[_K]] = Gio.ListStore(
+            item_type=KeyValueItem
+        )
+        list_store_expression = Gtk.PropertyExpression.new(
+            KeyValueItem,
+            None,
+            "value",
+        )
+
+        self.set_expression(list_store_expression)
+        self.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        self.set_model(self._model)
+
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("bind", self._on_factory_bind)
+
+        self.set_factory(factory)
+
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._on_factory_setup, KeyValueViewListItem, {})
+        factory.connect("bind", self._on_factory_bind)
+
+        self.set_list_factory(factory)
+
+        self._setup_signal_id = None
+        self.fixed_width = fixed_width
+
+        self.set_data(data)
+
+    @GObject.Property(type=int, default=-1, flags=GObject.ParamFlags.READWRITE)
+    def fixed_width(self) -> int:  # type: ignore
+        return self._fixed_width
+
+    @fixed_width.setter
+    def fixed_width(self, value: int) -> None:
+        self._fixed_width = value
+
+        kwargs: dict[str, Any] = {
+            "width_chars": value,
+            "max_width_chars": value,
+        }
+
+        factory = self.get_factory()
+        assert factory is not None
+
+        if self._setup_signal_id is not None:
+            factory.disconnect(self._setup_signal_id)
+        self._setup_signal_id = factory.connect(
+            "setup", self._on_factory_setup, KeyValueViewItem, kwargs
+        )
+
+    @staticmethod
+    def _on_factory_setup(
+        _factory: Gtk.SignalListItemFactory,
+        list_item: Gtk.ListItem,
+        view_item: Any,
+        kwargs: dict[str, Any],
+    ) -> None:
+        list_item.set_child(view_item(**kwargs))
+
+    @staticmethod
+    def _on_factory_bind(
+        _factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem
+    ) -> None:
+        view_item = cast(KeyValueViewItem, list_item.get_child())
+        obj = cast(KeyValueItem[_K], list_item.get_item())
+        view_item.bind(obj)
+
+    def set_data(self, data: dict[Any, str] | list[str] | None) -> None:
+        self._model.remove_all()
+
+        if not data:
+            return
+
+        items: list[KeyValueItem[_K]] = []
+        if isinstance(data, dict):
+            for key, value in data.items():
+                items.append(KeyValueItem(key=key, value=value))
+
+        if isinstance(data, list):
+            for entry in data:
+                items.append(KeyValueItem(key=entry, value=entry))  # type: ignore
+
+        self._model.splice(0, 0, items)
+
+    def get_selected_key(self) -> _K | None:
+        selected_item = self.get_selected_item()
+        if selected_item is None:
+            return None
+        return selected_item.key
+
+    def get_selected_item(self) -> KeyValueItem[_K] | None:
+        return cast(KeyValueItem[_K] | None, super().get_selected_item())
+
+    def select_key(self, key: _K) -> None:
+        for pos in range(self._model.get_n_items()):
+            item = self._model.get_item(pos)
+            assert item is not None
+            if item.key == key:
+                self.set_selected(pos)
+
+    def select_first(self) -> None:
+        if self._model.get_n_items() > 0:
+            self.set_selected(0)
+
+    def has_key(self, key: _K) -> bool:
+        for pos in range(self._model.get_n_items()):
+            item = self._model.get_item(pos)
+            assert item is not None
+            if item.key == key:
+                return True
+        return False
+
+    def get_item_count(self) -> int:
+        return self._model.get_n_items()
+
+    def run_destroy(self) -> None:
+        # item can carry tooltips, and GTK hides a visible tooltip only via gtk_widget_unroot().
+        # Destroying the items while still rooted results in a leak.
+        if self.get_root() is not None:
+            self.unparent()
+
+        self.set_model(None)
+        self._model.remove_all()
+        app.check_finalize(self._model)
+        del self._model
+        app.check_finalize(self)
+
+
+class KeyValueItem(GObject.Object, Generic[_K]):
+    key: _K = GObject.Property(type=object, flags=GObject.ParamFlags.READWRITE)  # type: ignore
+    value: str = GObject.Property(type=str, flags=GObject.ParamFlags.READWRITE)  # type: ignore
+
+    def __init__(self, *, key: _K, value: str) -> None:
+        GObject.Object.__init__(self, key=key, value=value)
+
+
+class KeyValueViewItem(Gtk.Label):
+    def __init__(self, **kwargs: Any):
+        Gtk.Label.__init__(
+            self, ellipsize=Pango.EllipsizeMode.MIDDLE, xalign=0, **kwargs
+        )
+
+    def bind(self, item: KeyValueItem[_K]) -> None:
+        self.set_label(item.value)
+        self.set_tooltip_text(item.value)
+
+
+class KeyValueViewListItem(Gtk.Label):
+    def __init__(self):
+        Gtk.Label.__init__(
+            self,
+            xalign=0,
+        )
+
+    def bind(self, item: KeyValueItem[_K]) -> None:
+        self.set_label(item.value)
+        self.set_tooltip_text(item.value)
+
+        if len(item.value) > 35:
+            self.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            self.set_width_chars(30)
+        else:
+            self.set_ellipsize(Pango.EllipsizeMode.NONE)
+            self.set_width_chars(-1)

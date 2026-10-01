@@ -54,7 +54,7 @@ macOS changes on macOS when they affect those platform-specific builders.
 
 # Commit Messages
 
-If you are not familiar with Git please read the [HowTo](https://dev.gajim.org/gajim/gajim/wikis/development/howtogit)
+If you are not familiar with Git please read the [HowTo](https://gitlab.com/gajim/gajim/wikis/development/howtogit)
 
 A good article regarding [good commit messages](https://chris.beams.io/posts/git-commit/)
 
@@ -75,7 +75,7 @@ Prefixes for development
 - cq        (code quality changes e.g. formatting, typing, codestyle)
 - cfix      (code fixes which should not show up in the changelog)
 - refactor  (code was changed, but the end user will not notice)
-- chore     (reoccuring tasks which need to be done)
+- chore     (reoccurring tasks which need to be done)
 - release   (only used for release commits)
 - revert    (used when a commit needs to be reverted)
 - other

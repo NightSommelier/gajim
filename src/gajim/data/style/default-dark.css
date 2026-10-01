@@ -1,0 +1,39 @@
+/*
+SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+
+SPDX-License-Identifier: GPL-3.0-only
+*/
+
+.gajim-incoming-nickname {
+    color: rgb(210, 75, 75);
+}
+.gajim-outgoing-nickname {
+    color: rgb(40, 140, 210);
+}
+.gajim-conversation-text {
+    color: inherit;
+}
+.gajim-status-message {
+    color: rgb(140, 175, 210);
+}
+.gajim-user-disconnected {
+    color: rgb(230, 170, 170);
+}
+.gajim-user-connected {
+    color: rgb(160, 200, 170);
+}
+.gajim-status-online {
+    color: rgb(102, 191, 16);
+}
+.gajim-status-away {
+    color: rgb(255, 133, 51);
+}
+.gajim-status-dnd {
+    color: rgb(230, 46, 0);
+}
+.gajim-status-offline {
+    color: rgb(154, 154, 154);
+}
+.gajim-status-connecting {
+    color: rgb(77, 166, 255);
+}

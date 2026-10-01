@@ -1,0 +1,278 @@
+# SPDX-FileCopyrightText: Contributors to Gajim <https://gajim.org/>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+from __future__ import annotations
+
+from typing import cast
+from typing import Literal
+from typing import overload
+
+import logging
+
+from gi.repository import Gtk
+from nbxmpp.errors import ChangePasswordStanzaError
+from nbxmpp.errors import StanzaError
+from nbxmpp.modules.dataforms import SimpleDataForm
+from nbxmpp.task import Task
+
+from gajim.common import app
+from gajim.common import passwords
+from gajim.common.helpers import to_user_string
+from gajim.common.i18n import _
+
+from gajim.gtk.assistant import Assistant
+from gajim.gtk.assistant import AssistantErrorPage
+from gajim.gtk.assistant import AssistantPage
+from gajim.gtk.assistant import AssistantSuccessPage
+from gajim.gtk.dataform import DataFormWidget
+from gajim.gtk.util.misc import ensure_not_destroyed
+
+log = logging.getLogger("gajim.gtk.change_password")
+
+
+class ChangePassword(Assistant):
+    def __init__(self, account: str) -> None:
+        Assistant.__init__(self)
+
+        self.account = account
+        self._client = app.get_client(account)
+        self._destroyed = False
+
+        cur_password = passwords.get_password(self.account)
+        assert cur_password is not None
+
+        self.add_button("apply", _("Change"), "suggested-action", complete=True)
+        self.add_button("close", _("Close"))
+        self.add_button("back", _("Back"))
+
+        self.add_pages(
+            {
+                "password": EnterPassword(cur_password),
+                "next_stage": NextStage(),
+                "error": Error(),
+                "success": Success(),
+            }
+        )
+
+        progress = self.add_default_page("progress")
+        progress.set_title(_("Changing Password..."))
+        progress.set_text(_("Trying to change password..."))
+
+        self._connect(self, "button-clicked", self._on_button_clicked)
+
+    @overload
+    def get_page(self, name: Literal["password"]) -> EnterPassword: ...
+
+    @overload
+    def get_page(self, name: Literal["next_stage"]) -> NextStage: ...
+
+    @overload
+    def get_page(self, name: Literal["error"]) -> Error: ...
+
+    @overload
+    def get_page(self, name: Literal["success"]) -> Success: ...
+
+    def get_page(self, name: str) -> AssistantPage:
+        return self._pages[name]
+
+    def _on_button_clicked(self, _assistant: Assistant, button_name: str) -> None:
+        page = self.get_current_page()
+        if button_name == "apply":
+            self.show_page("progress", Gtk.StackTransitionType.SLIDE_LEFT)
+            self._on_apply(next_stage=page == "next_stage")
+
+        elif button_name == "back":
+            self.show_page("password", Gtk.StackTransitionType.SLIDE_RIGHT)
+
+        elif button_name == "close":
+            self.close()
+
+    def _on_apply(self, next_stage: bool = False) -> None:
+        if next_stage:
+            # TODO: Does not apply sasl prep profile
+            form = self.get_page("next_stage").get_submit_form()
+            self._client.get_module("Register").change_password_with_form(
+                form, callback=self._on_change_password
+            )
+        else:
+            password = self.get_page("password").get_password()
+            self._client.get_module("Register").change_password(
+                password, callback=self._on_change_password
+            )
+
+    @ensure_not_destroyed
+    def _on_change_password(self, task: Task) -> None:
+        try:
+            task.finish()
+        except ChangePasswordStanzaError as error:
+            form = cast(SimpleDataForm, error.get_form())
+            self.get_page("next_stage").set_form(form)
+            self.show_page("next_stage", Gtk.StackTransitionType.SLIDE_LEFT)
+
+        except StanzaError as error:
+            error_text = to_user_string(error)
+            self.get_page("error").set_text(error_text)
+            self.show_page("error", Gtk.StackTransitionType.SLIDE_LEFT)
+
+        else:
+            password = self.get_page("password").get_password()
+            passwords.save_password(self.account, password)
+            self.show_page("success")
+
+    def _cleanup(self) -> None:
+        Assistant._cleanup(self)
+        self._destroyed = True
+
+
+class EnterPassword(AssistantPage):
+    def __init__(self, cur_password: str) -> None:
+        AssistantPage.__init__(self)
+        self.complete = False
+        self.title = _("Change Password")
+        self._cur_password = cur_password
+
+        heading = Gtk.Label(
+            label=_("Change Password"),
+            wrap=True,
+            max_width_chars=30,
+            halign=Gtk.Align.CENTER,
+            justify=Gtk.Justification.CENTER,
+        )
+
+        label = Gtk.Label(
+            label=_("Please enter your new password."),
+            wrap=True,
+            max_width_chars=50,
+            halign=Gtk.Align.CENTER,
+            justify=Gtk.Justification.CENTER,
+            margin_bottom=12,
+        )
+
+        self._cur_password_entry = Gtk.PasswordEntry(
+            show_peek_icon=True,
+            placeholder_text=_("Enter current password..."),
+            valign=Gtk.Align.END,
+        )
+        self._connect(self._cur_password_entry, "changed", self._on_changed)
+
+        self._password1_entry = Gtk.PasswordEntry(
+            show_peek_icon=True,
+            placeholder_text=_("Enter new password..."),
+            valign=Gtk.Align.END,
+        )
+        self._connect(self._password1_entry, "changed", self._on_changed)
+
+        self._password2_entry = Gtk.PasswordEntry(
+            activates_default=True,
+            show_peek_icon=True,
+            placeholder_text=_("Confirm new password..."),
+            valign=Gtk.Align.START,
+        )
+        self._connect(self._password2_entry, "changed", self._on_changed)
+
+        box = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        self._warning_label = Gtk.Label(max_width_chars=50)
+        self._icon = Gtk.Image(icon_name="lucide-circle-alert-symbolic", visible=False)
+        box.append(self._icon)
+        box.append(self._warning_label)
+
+        self.append(heading)
+        self.append(label)
+        self.append(self._cur_password_entry)
+        self.append(self._password1_entry)
+        self.append(self._password2_entry)
+        self.append(box)
+        self._hide_warning()
+
+    def _hide_warning(self) -> None:
+        self._icon.set_visible(False)
+        self._warning_label.set_text("")
+
+    def _show_warning(self, text: str) -> None:
+        self._icon.set_visible(True)
+        self._warning_label.set_text(text)
+
+    def _on_changed(self, _entry: Gtk.Entry) -> None:
+        cur_password = self._cur_password_entry.get_text()
+        if cur_password != self._cur_password:
+            self._show_warning(_("Current password incorrect"))
+            self._set_complete(False)
+            return
+
+        password1 = self._password1_entry.get_text()
+        if not password1:
+            self._show_warning(_("Passwords do not match"))
+            self._set_complete(False)
+            return
+
+        password2 = self._password2_entry.get_text()
+        if password1 != password2:
+            self._show_warning(_("Passwords do not match"))
+            self._set_complete(False)
+            return
+
+        self._hide_warning()
+        self._set_complete(True)
+
+    def _set_complete(self, state: bool) -> None:
+        self.complete = state
+        self.update_page_complete()
+
+    def get_password(self) -> str:
+        return self._password1_entry.get_text()
+
+    def get_visible_buttons(self) -> list[str]:
+        return ["apply"]
+
+
+class NextStage(AssistantPage):
+    def __init__(self) -> None:
+        AssistantPage.__init__(self)
+        self.set_valign(Gtk.Align.FILL)
+        self.complete = False
+        self.title = _("Change Password")
+        self._current_form = None
+
+    def _on_is_valid(self, _widget: Gtk.Widget, is_valid: bool) -> None:
+        self.complete = is_valid
+        self.update_page_complete()
+
+    def set_form(self, form: SimpleDataForm) -> None:
+        if self._current_form is not None:
+            self.remove(self._current_form)
+        self._current_form = DataFormWidget(form)
+        self._connect(self._current_form, "is-valid", self._on_is_valid)
+        self._current_form.validate()
+        self.append(self._current_form)
+
+    def get_submit_form(self) -> SimpleDataForm:
+        assert self._current_form is not None
+        form = self._current_form.get_submit_form()
+        assert isinstance(form, SimpleDataForm)
+        return form
+
+    def get_visible_buttons(self) -> list[str]:
+        return ["apply"]
+
+
+class Error(AssistantErrorPage):
+    def __init__(self) -> None:
+        AssistantErrorPage.__init__(self)
+        self.set_title(_("Password Change Failed"))
+        self.set_heading(_("Password Change Failed"))
+        self.set_text(_("An error occurred while trying to change your password."))
+
+    def get_visible_buttons(self) -> list[str]:
+        return ["back"]
+
+
+class Success(AssistantSuccessPage):
+    def __init__(self) -> None:
+        AssistantSuccessPage.__init__(self)
+        self.set_title(_("Password Changed"))
+        self.set_heading(_("Password Changed"))
+        self.set_text(_("Your password has successfully been changed."))
+
+    def get_visible_buttons(self) -> list[str]:
+        return ["close"]

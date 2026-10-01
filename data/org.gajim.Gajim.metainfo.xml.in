@@ -32,7 +32,7 @@
   <update_contact>gajim-devel_AT_gajim.org</update_contact>
   <url type="homepage">https://gajim.org/</url>
   <url type="vcs-browser">https://dev.gajim.org/gajim/gajim</url>
-  <url type="bugtracker">https://dev.gajim.org/gajim/gajim/-/issues</url>
+  <url type="bugtracker">https://dev.gajim.org/gajim/gajim/-/work_items</url>
   <url type="faq">https://dev.gajim.org/gajim/gajim/-/wikis/help/gajimfaq</url>
   <url type="help">https://dev.gajim.org/gajim/gajim/-/wikis/help/Help</url>
   <url type="donation">https://gajim.org/#donate</url>
@@ -48,6 +48,9 @@
     <control>pointing</control>
   </recommends>
   <releases>
+    <release version="2.6.0" date="2026-08-27">
+      <url type="details">https://dev.gajim.org/gajim/gajim/-/blob/2.6.0/ChangeLog</url>
+    </release>
     <release version="2.5.0" date="2026-07-15">
       <url type="details">https://dev.gajim.org/gajim/gajim/-/blob/2.5.0/ChangeLog</url>
     </release>
