@@ -13,6 +13,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -158,7 +162,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: downloaded
-      - name: Assemble flat release assets
+      - name: Assemble flat release assets and checksums
         run: |
           mkdir release-assets
           find downloaded -type f -exec cp {} release-assets/ \;
@@ -170,6 +174,14 @@ jobs:
           test "$(find release-assets -maxdepth 1 -type f -name '*.dmg' | wc -l)" -eq 1
           test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 6
           test -z "$(find release-assets -maxdepth 1 -type f -size 0 -print -quit)"
+          # Generate cryptographic SHA-256 checksums for each release asset
+          cd release-assets
+          for file in *; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" > "$file.sha256"
+            fi
+          done
+          cd ..
       - name: Write release notes
         env:
           REPOSITORY: ${{ github.repository }}
@@ -177,28 +189,50 @@ jobs:
         run: |
           release_url="https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG"
           macos_asset="$(basename "$(find release-assets -maxdepth 1 -type f -name '*.dmg')")"
-          {
-            echo "## Downloads"
-            echo
-            echo "- [Windows installer (.exe)]($release_url/Gajim.exe)"
-            echo "- [Windows MSIX bundle]($release_url/Gajim.msixbundle)"
-            echo "- [Linux portable archive (.tar.zst)]($release_url/gajim-linux-amd64-portable.tar.zst)"
-            echo "- [Linux AppImage]($release_url/gajim-linux-amd64.AppImage)"
-            echo "- [Linux Flatpak bundle]($release_url/gajim-flatpak.flatpak)"
-            echo "- [macOS arm64 disk image (.dmg)]($release_url/$macos_asset)"
-            echo
-            echo "## What changed"
-            echo
-            git log --first-parent --format='- %s' -n 12 "$RELEASE_TAG"
-            echo
-            echo "## Included packages"
-            echo
-            echo "- Linux amd64: portable archive, AppImage and Flatpak bundle"
-            echo "- Windows amd64: installer and MSIX bundle"
-            echo "- macOS arm64 disk image"
-            echo
-            echo "Windows MSIX publication/signing for the Microsoft Store remains a separate store-submission step."
-          } > release-notes.md
+          gajim_version="$(echo "$RELEASE_TAG" | sed 's/^gajim-//')"
+          short_sha="${GITHUB_SHA::12}"
+          cat > release-notes.md <<EOF
+## Gajim Fork-Release $RELEASE_TAG
+
+**Application version:** \`$gajim_version\`  
+**Source commit:** \`$short_sha\`  
+**Upstream baseline:** Gajim 2.6.0 ([gitlab.com/gajim/gajim](https://gitlab.com/gajim/gajim))  
+
+---
+
+### Downloads
+
+| Platform | Format / Package | Architecture | Checksum |
+| :--- | :--- | :--- | :--- |
+| **Windows** | [Gajim.exe](\$release_url/Gajim.exe) | x86_64 | [SHA-256](\$release_url/Gajim.exe.sha256) |
+| **Windows Store** | [Gajim.msixbundle](\$release_url/Gajim.msixbundle) | x86_64 | [SHA-256](\$release_url/Gajim.msixbundle.sha256) |
+| **Linux (Portable)** | [gajim-linux-amd64-portable.tar.zst](\$release_url/gajim-linux-amd64-portable.tar.zst) | x86_64 | [SHA-256](\$release_url/gajim-linux-amd64-portable.tar.zst.sha256) |
+| **Linux (AppImage)** | [gajim-linux-amd64.AppImage](\$release_url/gajim-linux-amd64.AppImage) | x86_64 | [SHA-256](\$release_url/gajim-linux-amd64.AppImage.sha256) |
+| **Linux (Flatpak)** | [gajim-flatpak.flatpak](\$release_url/gajim-flatpak.flatpak) | x86_64 | [SHA-256](\$release_url/gajim-flatpak.flatpak.sha256) |
+| **macOS** | [\$macos_asset](\$release_url/\$macos_asset) | Apple Silicon (arm64) | [SHA-256](\$release_url/\$macos_asset.sha256) |
+
+Every package is accompanied by an independent SHA-256 verification checksum file.
+
+---
+
+### Included Packages & Features
+
+- **Linux**: Standalone AppImage, portable self-contained archive (.tar.zst), and Flatpak single-file bundle.
+- **Windows**: NSIS setup installer and MSIX application bundle.
+- **macOS**: Signed-ready DMG disk image for Apple Silicon (\`arm64\`, macOS 15+).
+- **Core Enhancements**:
+  - Full compatibility with Gajim 2.6.0 (src layout, httpx2, updated GNOME 51 runtime).
+  - Robust fallback for legacy network connectivity checks.
+  - Enhanced inline formatting markers and whitespace preservation.
+
+---
+
+### Changes in this build
+
+\$(git log --first-parent --format='- %s' -n 12 "$RELEASE_TAG")
+
+> **Note:** Windows MSIX publication to the Microsoft Store remains a separate publisher submission step.
+EOF
       - name: Create or update GitHub pre-release
         env:
           GH_TOKEN: ${{ github.token }}
